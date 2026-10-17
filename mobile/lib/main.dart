@@ -41,13 +41,48 @@ class _LeagueAppState extends State<LeagueApp> {
 
 ThemeData _theme(Color primary, Color secondary) {
   final scheme = ColorScheme.fromSeed(seedColor: primary, primary: primary, secondary: secondary, brightness: Brightness.light);
+  final outline = RoundedRectangleBorder(borderRadius: BorderRadius.circular(14));
   return ThemeData(
     colorScheme: scheme,
     useMaterial3: true,
-    textTheme: const TextTheme(bodyLarge: TextStyle(fontSize: 16), titleLarge: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
-    filledButtonTheme: FilledButtonThemeData(
-      style: FilledButton.styleFrom(minimumSize: const Size(48, 48), textStyle: const TextStyle(fontSize: 16)),
+    scaffoldBackgroundColor: const Color(0xFFF2F4F3),
+    appBarTheme: AppBarTheme(
+      backgroundColor: scheme.primary,
+      foregroundColor: Colors.white,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      titleTextStyle: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: 0.2),
     ),
+    cardTheme: CardThemeData(
+      elevation: 0,
+      color: Colors.white,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: scheme.outlineVariant)),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: scheme.outlineVariant)),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(minimumSize: const Size(48, 48), textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(48), shape: outline),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      height: 68,
+      backgroundColor: Colors.white,
+      indicatorColor: scheme.primary.withValues(alpha: 0.12),
+      labelTextStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+    ),
+    snackBarTheme: SnackBarThemeData(behavior: SnackBarBehavior.floating, shape: outline),
+    dividerTheme: DividerThemeData(color: scheme.outlineVariant.withValues(alpha: 0.6)),
   );
 }
 
@@ -221,24 +256,39 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('Sign in')),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          const Text('League operations', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 8),
-          const Text('Players, fixtures, standings and the club store.'),
-          const SizedBox(height: 20),
-          TextField(controller: email, decoration: const InputDecoration(labelText: 'Email'), keyboardType: TextInputType.emailAddress),
-          const SizedBox(height: 12),
-          TextField(controller: password, decoration: const InputDecoration(labelText: 'Password'), obscureText: true),
-          const SizedBox(height: 12),
-          TextField(controller: server, decoration: const InputDecoration(labelText: 'Server address', helperText: 'Emulator: http://10.0.2.2:8080  Phone: http://laptop-ip:8080')),
-          if (error != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error))),
-          const SizedBox(height: 20),
-          FilledButton(onPressed: busy ? null : submit, child: Text(busy ? 'Signing in…' : 'Sign in')),
-        ],
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(color: scheme.primary, borderRadius: BorderRadius.circular(16)),
+              child: const Icon(Icons.shield, color: Colors.white, size: 30),
+            ),
+            const SizedBox(height: 18),
+            const Text('NaSCon League', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -0.4)),
+            const SizedBox(height: 6),
+            Text('Fixtures, standings, roster and the club store.', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15)),
+            const SizedBox(height: 24),
+            TextField(controller: email, decoration: const InputDecoration(labelText: 'Email'), keyboardType: TextInputType.emailAddress),
+            const SizedBox(height: 12),
+            TextField(controller: password, decoration: const InputDecoration(labelText: 'Password'), obscureText: true),
+            const SizedBox(height: 12),
+            TextField(
+              controller: server,
+              decoration: const InputDecoration(labelText: 'Server', helperText: 'Emulator 10.0.2.2 · Phone uses the laptop address'),
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 12),
+              _Note(text: error!, error: true),
+            ],
+            const SizedBox(height: 20),
+            FilledButton(onPressed: busy ? null : submit, child: Text(busy ? 'Signing in…' : 'Sign in')),
+          ],
+        ),
       ),
     );
   }
@@ -322,18 +372,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       StorePage(api: widget.api),
       ClubPage(api: widget.api, onQueued: _loadQueue),
     ];
+    final role = widget.api.role.replaceAll('_', ' ');
     return Scaffold(
       appBar: AppBar(
-        title: const Text('NaSCon League'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('NaSCon League'),
+            Text(role.isEmpty ? 'League' : role, style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w500)),
+          ],
+        ),
+        toolbarHeight: 64,
         actions: [
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Chip(
-              label: Text(widget.api.link),
-              avatar: Icon(_linkIcon(widget.api.link), size: 18),
-            ),
-          ),
-          IconButton(tooltip: 'Sync now', onPressed: () => _sync(), icon: const Icon(Icons.sync)),
+          IconButton(tooltip: '${widget.api.link}. Tap to sync', onPressed: () => _sync(), icon: Icon(_linkIcon(widget.api.link))),
           IconButton(
             tooltip: 'Sign out',
             onPressed: () async {
@@ -348,10 +399,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         children: [
           if (queue.isNotEmpty)
             Material(
-              color: Theme.of(context).colorScheme.secondaryContainer,
+              color: const Color(0xFFFFF6D8),
               child: ListTile(
-                title: Text('${queue.length} pending action${queue.length == 1 ? '' : 's'}'),
-                subtitle: Text(queue.map((row) => row['label']).join(', ')),
+                dense: true,
+                leading: const Icon(Icons.schedule),
+                title: Text('${queue.length} waiting to sync'),
+                subtitle: Text(queue.map((row) => row['label']).join(', '), maxLines: 1, overflow: TextOverflow.ellipsis),
               ),
             ),
           Expanded(child: pages[tab]),
@@ -412,19 +465,38 @@ class _FixturesPageState extends State<FixturesPage> {
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView.separated(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(16),
         itemCount: rows.length,
-        separatorBuilder: (_, index) => const SizedBox(height: 8),
+        separatorBuilder: (_, index) => const SizedBox(height: 10),
         itemBuilder: (context, index) {
           final match = Map<String, dynamic>.from(rows[index] as Map);
           final score = Map<String, dynamic>.from(match['score'] as Map? ?? {});
           return Card(
-            child: ListTile(
-              minTileHeight: 64,
-              title: Text('${match['home']} vs ${match['away']}'),
-              subtitle: Text('${match['status']}  ${match['starts_at'] ?? ''}'),
-              trailing: Text('${score['home'] ?? 0}–${score['away'] ?? 0}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => MatchPage(api: widget.api, matchId: match['match_id'] as String, onQueued: widget.onQueued))),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        _StatusPill(match['status']?.toString() ?? ''),
+                        const Spacer(),
+                        Text(_when(match['starts_at']?.toString()), style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(child: Text('${match['home']}', style: const TextStyle(fontWeight: FontWeight.w700))),
+                        Text('${score['home'] ?? 0}  –  ${score['away'] ?? 0}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                        Expanded(child: Text('${match['away']}', textAlign: TextAlign.end, style: const TextStyle(fontWeight: FontWeight.w700))),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             ),
           );
         },
@@ -537,27 +609,50 @@ class _MatchPageState extends State<MatchPage> {
     final events = (match!['events'] as List? ?? []);
     final organizer = widget.api.role == 'league_organizer' || widget.api.role == 'super_admin';
     return Scaffold(
-      appBar: AppBar(title: Text('${home['team_id']} vs ${away['team_id']}')),
+      appBar: AppBar(title: const Text('Match')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text('${home['score']} – ${away['score']}', textAlign: TextAlign.center, style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w800)),
-          Text('${match!['status']} · ${match!['outcome']}', textAlign: TextAlign.center),
-          if (match!['pinned_variant_id'] != null)
-            Card(child: ListTile(leading: const Icon(Icons.push_pin), title: const Text('Pinned product'), subtitle: Text('${match!['pinned_variant_id']}'))),
-          const SizedBox(height: 12),
-          const Text('Timeline', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-          if (events.isEmpty) const Text('No events yet'),
-          for (final event in events)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text('${event['type']}'),
-              subtitle: Text('${event['payload']}'),
-              trailing: event['compensated'] == true ? const Text('Corrected') : null,
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 12),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(child: Text('${home['team_id']}', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w700))),
+                      Text('${home['score']} – ${away['score']}', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.w800)),
+                      Expanded(child: Text('${away['team_id']}', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w700))),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  _StatusPill('${match!['status']}'),
+                  const SizedBox(height: 4),
+                  Text(_words('${match!['outcome']}'), style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                ],
+              ),
             ),
-          if (message != null) Text(message!),
-          if (organizer) ...[
+          ),
+          if (match!['pinned_variant_id'] != null) ...[
+            const SizedBox(height: 10),
+            Card(child: ListTile(leading: const Icon(Icons.push_pin), title: const Text('Pinned product'), subtitle: Text('${match!['pinned_variant_id']}'))),
+          ],
+          const SizedBox(height: 18),
+          const _Section('Timeline'),
+          if (events.isEmpty) const Text('No events yet'),
+          for (final event in events) ...[
             const SizedBox(height: 8),
+            Card(
+              child: ListTile(
+                title: Text(_words('${event['type']}')),
+                subtitle: Text('${event['payload']}'),
+                trailing: event['compensated'] == true ? const _StatusPill('corrected') : null,
+              ),
+            ),
+          ],
+          if (message != null) ...[const SizedBox(height: 10), _Note(text: message!)],
+          if (organizer) ...[
+            const SizedBox(height: 12),
             FilledButton(onPressed: () => _score('goal'), child: const Text('Add goal for home')),
             const SizedBox(height: 8),
             OutlinedButton(onPressed: _compensate, child: const Text('Correct last score')),
@@ -602,20 +697,48 @@ class _StandingsPageState extends State<StandingsPage> {
   Widget build(BuildContext context) {
     if (loading) return const Center(child: CircularProgressIndicator());
     if (table.isEmpty) return const Center(child: Text('No matches yet'));
-    return ListView.separated(
-      padding: const EdgeInsets.all(12),
-      itemCount: table.length,
-      separatorBuilder: (_, index) => const Divider(height: 1),
-      itemBuilder: (context, index) {
-        final row = Map<String, dynamic>.from(table[index] as Map);
-        return ListTile(
-          minTileHeight: 56,
-          leading: CircleAvatar(child: Text('${row['rank']}')),
-          title: Text('${row['team_id']}'),
-          subtitle: Text('${row['points']} pts · ${row['status']}'),
-          trailing: Text('${row['won']}-${row['drawn']}-${row['lost']}'),
-        );
-      },
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        children: [
+          const _Section('Demo league'),
+          const SizedBox(height: 8),
+          Card(
+            child: Column(
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  child: Row(
+                    children: [
+                      SizedBox(width: 28, child: Text('#', style: TextStyle(fontWeight: FontWeight.w700))),
+                      Expanded(child: Text('Team', style: TextStyle(fontWeight: FontWeight.w700))),
+                      Text('W-D-L', style: TextStyle(fontWeight: FontWeight.w700)),
+                      SizedBox(width: 48, child: Text('Pts', textAlign: TextAlign.end, style: TextStyle(fontWeight: FontWeight.w700))),
+                    ],
+                  ),
+                ),
+                for (final raw in table)
+                  Builder(builder: (context) {
+                    final row = Map<String, dynamic>.from(raw as Map);
+                    return ListTile(
+                      dense: true,
+                      leading: CircleAvatar(
+                        radius: 14,
+                        backgroundColor: row['rank'] == 1 ? Theme.of(context).colorScheme.secondary : Theme.of(context).colorScheme.surfaceContainerHighest,
+                        child: Text('${row['rank']}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
+                      ),
+                      title: Text('${row['team_id']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                      subtitle: Text(_words('${row['status']}')),
+                      trailing: Text('${row['won']}-${row['drawn']}-${row['lost']}    ${row['points']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                    );
+                  }),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -686,25 +809,37 @@ class _StorePageState extends State<StorePage> {
   Widget build(BuildContext context) {
     if (products.isEmpty) return Center(child: Text(message ?? 'No products yet'));
     return ListView(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       children: [
-        if (message != null) Text(message!),
-        if (receipt != null) Card(child: ListTile(title: const Text('Receipt'), subtitle: Text(receipt!))),
-        for (final product in products)
+        if (message != null) ...[_Note(text: message!), const SizedBox(height: 10)],
+        if (receipt != null) ...[
+          Card(
+            color: const Color(0xFFE8F6EE),
+            child: ListTile(
+              leading: const Icon(Icons.receipt_long),
+              title: const Text('Receipt', style: TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: Text(receipt!),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+        for (final product in products) ...[
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(product['name'] as String, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-                  Text(product['category'] as String),
+                  Text(product['name'] as String, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                  Text('${product['category']}', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                   for (final variant in (product['variants'] as List))
                     Padding(
-                      padding: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.only(top: 10),
                       child: Row(
                         children: [
-                          Expanded(child: Text('${variant['size']} · stock ${variant['stock']}')),
+                          Expanded(
+                            child: Text('Size ${variant['size']} · PKR ${((variant['price_minor'] as num) / 100).toStringAsFixed(0)} · ${variant['stock']} left'),
+                          ),
                           FilledButton(onPressed: () => buy(variant['variant_id'] as String), child: const Text('Buy')),
                         ],
                       ),
@@ -713,6 +848,8 @@ class _StorePageState extends State<StorePage> {
               ),
             ),
           ),
+          const SizedBox(height: 10),
+        ],
       ],
     );
   }
@@ -795,21 +932,44 @@ class _ClubPageState extends State<ClubPage> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text(club!['name'] as String, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
-        Text('Home: ${venue['name']} (${venue['latitude']}, ${venue['longitude']})'),
-        const SizedBox(height: 8),
-        Text('Coach ${staff['coach']} · Manager ${staff['manager']} · Physio ${staff['physio']}'),
-        const SizedBox(height: 12),
-        const Text('Roster', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-        if (roster.isEmpty) const Text('No players yet'),
-        for (final player in roster)
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            minTileHeight: 56,
-            title: Text('${player['name']}'),
-            subtitle: Text('${player['position']} · ${player['role'] ?? 'unassigned'}'),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(club!['name'] as String, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 6),
+                Text('${venue['name']}', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _StatusPill('Coach ${staff['coach']}'),
+                    _StatusPill('Manager ${staff['manager']}'),
+                    _StatusPill('Physio ${staff['physio']}'),
+                  ],
+                ),
+              ],
+            ),
           ),
-        if (message != null) Text(message!),
+        ),
+        const SizedBox(height: 16),
+        const _Section('Roster'),
+        const SizedBox(height: 8),
+        if (roster.isEmpty) const Text('No players yet'),
+        for (final player in roster) ...[
+          Card(
+            child: ListTile(
+              leading: CircleAvatar(child: Text('${player['name']}'.isEmpty ? '?' : '${player['name']}'[0])),
+              title: Text('${player['name']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: Text('${_words('${player['position']}')} · ${_words('${player['role'] ?? 'unassigned'}')}'),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+        if (message != null) ...[const SizedBox(height: 4), _Note(text: message!)],
         if (manager) ...[
           const SizedBox(height: 8),
           FilledButton(onPressed: _transfer, child: const Text('Transfer Demo Back')),
@@ -850,6 +1010,63 @@ IconData _linkIcon(String link) {
   if (link == 'Offline') return Icons.cloud_off;
   if (link == 'Syncing') return Icons.sync;
   return Icons.cloud_done;
+}
+
+class _Section extends StatelessWidget {
+  const _Section(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(text, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800));
+  }
+}
+
+class _Note extends StatelessWidget {
+  const _Note({required this.text, this.error = false});
+  final String text;
+  final bool error;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: error ? scheme.errorContainer : scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(text, style: TextStyle(color: error ? scheme.onErrorContainer : scheme.onSurface)),
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  const _StatusPill(this.value);
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(_words(value), style: TextStyle(color: Theme.of(context).colorScheme.primary, fontSize: 12, fontWeight: FontWeight.w700)),
+    );
+  }
+}
+
+String _when(String? value) {
+  if (value == null || value.isEmpty) return '';
+  return value.replaceFirst('T', ' ').replaceFirst('Z', '');
+}
+
+String _words(String value) {
+  if (value == 'null' || value.isEmpty) return '';
+  return value.replaceAll('_', ' ');
 }
 
 String _plain(String? code) {

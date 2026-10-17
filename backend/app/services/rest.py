@@ -477,7 +477,7 @@ def authorize(db: Session, claims: dict, probe: str, target: str | None) -> None
     if probe == "club_write":
         club = db.get(Club, target)
         if club is None:
-            raise ApiError(404, "NOT_FOUND", "Club does not exist.") if False else ApiError(404, "SQUAD_NOT_FOUND", "Club does not exist.")
+            raise ApiError(404, "SQUAD_NOT_FOUND", "Club does not exist.")
         if role == "super_admin":
             return
         if role == "club_manager" and claims.get("club_id") == target and claims.get("tenant_id") == club.tenant_id:

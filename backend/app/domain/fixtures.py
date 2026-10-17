@@ -45,38 +45,6 @@ def _circle_rounds(teams: list[str]) -> list[list[tuple[str | None, str | None]]
     return rounds
 
 
-def _balance_leg(rounds: list[list[tuple[str | None, str | None]]]) -> list[list[tuple[str | None, str | None]]]:
-    """Flip individual games until every team is within one home of away."""
-    from collections import defaultdict
-
-    home_count: dict[str, int] = defaultdict(int)
-    away_count: dict[str, int] = defaultdict(int)
-    placed: list[list[tuple[str | None, str | None]]] = []
-    for pairs in rounds:
-        new_pairs: list[tuple[str | None, str | None]] = []
-        for left, right in pairs:
-            if left is None or right is None:
-                new_pairs.append((left, right))
-                continue
-            # Prefer the direction that reduces imbalance.
-            def cost(home: str, away: str) -> tuple[int, int]:
-                return (
-                    abs((home_count[home] + 1) - away_count[home])
-                    + abs(home_count[away] - (away_count[away] + 1)),
-                    home_count[home] - away_count[home],
-                )
-
-            keep = cost(left, right)
-            flip = cost(right, left)
-            if flip < keep:
-                left, right = right, left
-            home_count[left] += 1
-            away_count[right] += 1
-            new_pairs.append((left, right))
-        placed.append(new_pairs)
-    return placed
-
-
 def generate_round_robin(teams: list[str], params: dict[str, Any] | None) -> dict[str, Any]:
     teams = _teams_ok(teams, 2, 40)
     params = params or {}
@@ -171,49 +139,6 @@ def generate_round_robin(teams: list[str], params: dict[str, Any] | None) -> dic
         "rounds": rounds_out,
         "summary": summary,
     }
-
-
-def _force_balance(rounds: list[list[tuple[str | None, str | None]]]) -> list[list[tuple[str | None, str | None]]]:
-    from collections import defaultdict
-
-    def counts(source: list[list[tuple[str | None, str | None]]]) -> dict[str, list[int]]:
-        found: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-        for pairs in source:
-            for home, away in pairs:
-                if home is not None and away is not None:
-                    found[home][0] += 1
-                    found[away][1] += 1
-        return found
-
-    current = [list(pairs) for pairs in rounds]
-    for _ in range(len(current) * 4):
-        tallies = counts(current)
-        worst = None
-        for team, (home, away) in tallies.items():
-            gap = abs(home - away)
-            if gap > 1 and (worst is None or gap > worst[0]):
-                worst = (gap, team, home, away)
-        if worst is None:
-            return current
-        _, team, home_n, away_n = worst
-        flipped = False
-        for pairs in current:
-            for index, (left, right) in enumerate(pairs):
-                if left is None or right is None:
-                    continue
-                if home_n > away_n and left == team:
-                    pairs[index] = (right, left)
-                    flipped = True
-                    break
-                if away_n > home_n and right == team:
-                    pairs[index] = (right, left)
-                    flipped = True
-                    break
-            if flipped:
-                break
-        if not flipped:
-            break
-    return current
 
 
 def generate_swiss(teams: list[str], params: dict[str, Any] | None) -> dict[str, Any]:
