@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -21,31 +23,36 @@ class LeagueApp extends StatefulWidget {
 
 class _LeagueAppState extends State<LeagueApp> {
   final api = Api();
-  ThemeData theme = _theme(const Color(0xFF0B3D2E), const Color(0xFFF5C518));
+  Color primary = const Color(0xFF0B3D2E);
+  Color secondary = const Color(0xFFF5C518);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'NaSCon League',
       debugShowCheckedModeBanner: false,
-      theme: theme,
+      theme: _theme(primary, secondary, Brightness.light),
+      darkTheme: _theme(primary, secondary, Brightness.dark),
       home: RootPage(
         api: api,
-        onTenant: (primary, secondary) {
-          setState(() => theme = _theme(primary, secondary));
+        onTenant: (nextPrimary, nextSecondary) {
+          setState(() {
+            primary = nextPrimary;
+            secondary = nextSecondary;
+          });
         },
       ),
     );
   }
 }
 
-ThemeData _theme(Color primary, Color secondary) {
-  final scheme = ColorScheme.fromSeed(seedColor: primary, primary: primary, secondary: secondary, brightness: Brightness.light);
+ThemeData _theme(Color primary, Color secondary, Brightness brightness) {
+  final scheme = ColorScheme.fromSeed(seedColor: primary, primary: primary, secondary: secondary, brightness: brightness);
   final outline = RoundedRectangleBorder(borderRadius: BorderRadius.circular(14));
   return ThemeData(
     colorScheme: scheme,
     useMaterial3: true,
-    scaffoldBackgroundColor: const Color(0xFFF2F4F3),
+    scaffoldBackgroundColor: brightness == Brightness.dark ? const Color(0xFF101412) : const Color(0xFFF2F4F3),
     appBarTheme: AppBarTheme(
       backgroundColor: scheme.primary,
       foregroundColor: Colors.white,
@@ -55,7 +62,7 @@ ThemeData _theme(Color primary, Color secondary) {
     ),
     cardTheme: CardThemeData(
       elevation: 0,
-      color: Colors.white,
+      color: scheme.surface,
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
@@ -64,7 +71,7 @@ ThemeData _theme(Color primary, Color secondary) {
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: Colors.white,
+      fillColor: scheme.surface,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: scheme.outlineVariant)),
       enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: scheme.outlineVariant)),
@@ -77,7 +84,7 @@ ThemeData _theme(Color primary, Color secondary) {
     ),
     navigationBarTheme: NavigationBarThemeData(
       height: 68,
-      backgroundColor: Colors.white,
+      backgroundColor: scheme.surface,
       indicatorColor: scheme.primary.withValues(alpha: 0.12),
       labelTextStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
     ),
@@ -95,13 +102,42 @@ class Api {
       : (!kIsWeb && defaultTargetPlatform == TargetPlatform.android ? 'http://10.0.2.2:8080' : 'http://127.0.0.1:8080');
   String? token;
   String role = '';
-  String link = 'Online';
+  String name = '';
+  String tenantName = '';
+  String link = 'Syncing';
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     base = _definedBase.isNotEmpty ? _definedBase : (prefs.getString('base') ?? base);
     token = await storage.read(key: 'token');
     role = await storage.read(key: 'role') ?? '';
+    name = await storage.read(key: 'name') ?? '';
+    tenantName = await storage.read(key: 'tenant_name') ?? '';
+  }
+
+  Future<bool> phoneHasNetwork() async {
+    try {
+      final results = await Connectivity().checkConnectivity();
+      return results.any((item) => item != ConnectivityResult.none);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> probe() async {
+    if (!await phoneHasNetwork()) {
+      link = 'Offline';
+      return false;
+    }
+    try {
+      final response = await http.get(Uri.parse('$base/health')).timeout(const Duration(seconds: 4));
+      final online = response.statusCode == 200;
+      link = online ? 'Online' : 'Offline';
+      return online;
+    } catch (_) {
+      link = 'Offline';
+      return false;
+    }
   }
 
   Future<void> saveBase(String value) async {
@@ -130,7 +166,7 @@ class Api {
         final message = error is Map ? (error['message'] ?? 'Request failed') : 'Request failed';
         throw ApiException(message.toString());
       }
-      link = 'Online';
+      link = await phoneHasNetwork() ? 'Online' : 'Offline';
       return decoded;
     } catch (error) {
       if (error is ApiException) rethrow;
@@ -143,10 +179,14 @@ class Api {
     final data = await send('POST', '/api/v1/auth/login', {'email': email, 'password': password});
     token = data['token'] as String;
     role = data['role'] as String;
+    name = data['name']?.toString() ?? '';
     await storage.write(key: 'token', value: token);
     await storage.write(key: 'role', value: role);
+    await storage.write(key: 'name', value: name);
     final tenant = data['tenant'];
     if (tenant is Map) {
+      tenantName = tenant['name']?.toString() ?? '';
+      await storage.write(key: 'tenant_name', value: tenantName);
       await local.save('tenant', Map<String, dynamic>.from(tenant));
     }
   }
@@ -154,6 +194,8 @@ class Api {
   Future<void> logout() async {
     token = null;
     role = '';
+    name = '';
+    tenantName = '';
     await storage.deleteAll();
   }
 }
@@ -227,7 +269,9 @@ class _LoginPageState extends State<LoginPage> {
   final password = TextEditingController(text: 'Nascon@26');
   final server = TextEditingController();
   String? error;
+  String? connection;
   bool busy = false;
+  bool hidePassword = true;
 
   @override
   void initState() {
@@ -254,6 +298,13 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  Future<void> testConnection() async {
+    setState(() => connection = 'Checking…');
+    await widget.api.saveBase(server.text);
+    final ok = await widget.api.probe();
+    if (mounted) setState(() => connection = ok ? 'Connected' : 'Cannot reach server');
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -272,14 +323,61 @@ class _LoginPageState extends State<LoginPage> {
             const Text('NaSCon League', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -0.4)),
             const SizedBox(height: 6),
             Text('Fixtures, standings, roster and the club store.', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15)),
-            const SizedBox(height: 24),
-            TextField(controller: email, decoration: const InputDecoration(labelText: 'Email'), keyboardType: TextInputType.emailAddress),
+            const SizedBox(height: 18),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final demo in const [
+                  ('Viewer', 'viewer@nascon.test'),
+                  ('Player', 'player@nascon.test'),
+                  ('Manager', 'manager@nascon.test'),
+                  ('Organizer', 'organizer@nascon.test'),
+                  ('Admin', 'admin@nascon.test'),
+                ])
+                  ActionChip(
+                    label: Text(demo.$1),
+                    onPressed: busy ? null : () => setState(() => email.text = demo.$2),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: email,
+              decoration: const InputDecoration(labelText: 'Email'),
+              keyboardType: TextInputType.emailAddress,
+              textInputAction: TextInputAction.next,
+              autofillHints: const [AutofillHints.email],
+            ),
             const SizedBox(height: 12),
-            TextField(controller: password, decoration: const InputDecoration(labelText: 'Password'), obscureText: true),
+            TextField(
+              controller: password,
+              decoration: InputDecoration(
+                labelText: 'Password',
+                suffixIcon: IconButton(
+                  tooltip: hidePassword ? 'Show password' : 'Hide password',
+                  onPressed: () => setState(() => hidePassword = !hidePassword),
+                  icon: Icon(hidePassword ? Icons.visibility : Icons.visibility_off),
+                ),
+              ),
+              obscureText: hidePassword,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => busy ? null : submit(),
+              autofillHints: const [AutofillHints.password],
+            ),
             const SizedBox(height: 12),
             TextField(
               controller: server,
-              decoration: const InputDecoration(labelText: 'Server', helperText: 'Emulator 10.0.2.2 · Phone uses the laptop address'),
+              decoration: const InputDecoration(labelText: 'Server', helperText: 'Emulator 10.0.2.2 · USB phone 127.0.0.1 · Hotspot uses the laptop address'),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: busy ? null : testConnection,
+                icon: Icon(connection == 'Connected' ? Icons.check_circle : Icons.wifi_tethering, size: 18),
+                label: Text(connection ?? 'Test connection'),
+              ),
             ),
             if (error != null) ...[
               const SizedBox(height: 12),
@@ -306,19 +404,44 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   int tab = 0;
   List<Map<String, dynamic>> queue = [];
+  StreamSubscription<List<ConnectivityResult>>? _net;
+  Timer? _ticker;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadQueue();
+    _net = Connectivity().onConnectivityChanged.listen((results) {
+      final connected = results.any((item) => item != ConnectivityResult.none);
+      if (!connected) {
+        if (mounted) setState(() => widget.api.link = 'Offline');
+        return;
+      }
+      _sync(automatic: true);
+    });
+    _ticker = Timer.periodic(const Duration(seconds: 3), (_) => _watch());
     _sync(automatic: true);
   }
 
   @override
   void dispose() {
+    _ticker?.cancel();
+    _net?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _watch() async {
+    if (!mounted || widget.api.link == 'Syncing') return;
+    final before = widget.api.link;
+    final online = await widget.api.probe();
+    if (!mounted) return;
+    if (online && before == 'Offline') {
+      await _sync(automatic: true);
+      return;
+    }
+    if (widget.api.link != before) setState(() {});
   }
 
   @override
@@ -333,11 +456,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _sync({bool automatic = false}) async {
     final rows = await widget.api.local.pending();
-    if (rows.isEmpty) {
-      setState(() => widget.api.link = widget.api.link == 'Offline' ? 'Offline' : 'Online');
+    if (mounted) setState(() => widget.api.link = 'Syncing');
+    final online = await widget.api.probe();
+    if (!online) {
+      await _loadQueue();
+      if (!automatic && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No connection. Changes stay on this phone.')));
+      }
       return;
     }
-    setState(() => widget.api.link = 'Syncing');
+    if (rows.isEmpty) {
+      if (mounted) setState(() => widget.api.link = 'Online');
+      if (!automatic && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('You are online. Nothing is waiting to sync.')));
+      }
+      return;
+    }
     try {
       final actions = rows.map((row) => row['action'] as Map<String, dynamic>).toList();
       final result = await widget.api.send('POST', '/api/v1/offline-sync', {'device_id': 'phone-1', 'actions': actions});
@@ -356,11 +490,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await widget.api.local.clearDone();
       widget.api.link = 'Online';
     } on ApiException {
-      widget.api.link = 'Offline';
+      final stillOnline = await widget.api.probe();
+      widget.api.link = stillOnline ? 'Online' : 'Offline';
     }
     await _loadQueue();
     if (!automatic && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sync finished')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(widget.api.link == 'Online' ? 'Synced' : 'Could not sync. Saved on this phone.')));
     }
   }
 
@@ -371,32 +506,35 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       StandingsPage(api: widget.api),
       StorePage(api: widget.api),
       ClubPage(api: widget.api, onQueued: _loadQueue),
+      MorePage(api: widget.api, queue: queue, onSync: () => _sync(), onLogout: widget.onLogout),
     ];
     final role = widget.api.role.replaceAll('_', ' ');
+    final title = widget.api.tenantName.isEmpty ? 'NaSCon League' : widget.api.tenantName;
     return Scaffold(
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('NaSCon League'),
+            Text(title),
             Text(role.isEmpty ? 'League' : role, style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w500)),
           ],
         ),
         toolbarHeight: 64,
         actions: [
-          IconButton(tooltip: '${widget.api.link}. Tap to sync', onPressed: () => _sync(), icon: Icon(_linkIcon(widget.api.link))),
-          IconButton(
-            tooltip: 'Sign out',
-            onPressed: () async {
-              await widget.api.logout();
-              widget.onLogout();
-            },
-            icon: const Icon(Icons.logout),
-          ),
+          _SyncChip(link: widget.api.link, onTap: () => _sync()),
         ],
       ),
       body: Column(
         children: [
+          if (widget.api.link == 'Offline')
+            const Material(
+              color: Color(0xFFFFF4E5),
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.cloud_off),
+                title: Text('You are offline. Changes are saved on this phone.'),
+              ),
+            ),
           if (queue.isNotEmpty)
             Material(
               color: const Color(0xFFFFF6D8),
@@ -405,9 +543,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 leading: const Icon(Icons.schedule),
                 title: Text('${queue.length} waiting to sync'),
                 subtitle: Text(queue.map((row) => row['label']).join(', '), maxLines: 1, overflow: TextOverflow.ellipsis),
+                onTap: () => setState(() => tab = 4),
               ),
             ),
-          Expanded(child: pages[tab]),
+          Expanded(
+            child: IndexedStack(
+              index: tab,
+              children: pages,
+            ),
+          ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -418,6 +562,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           NavigationDestination(icon: Icon(Icons.leaderboard), label: 'Standings'),
           NavigationDestination(icon: Icon(Icons.storefront), label: 'Store'),
           NavigationDestination(icon: Icon(Icons.shield), label: 'Club'),
+          NavigationDestination(icon: Icon(Icons.person), label: 'More'),
         ],
       ),
     );
@@ -437,6 +582,7 @@ class _FixturesPageState extends State<FixturesPage> {
   List<dynamic> rows = [];
   String? error;
   bool loading = true;
+  String filter = 'All';
 
   @override
   void initState() {
@@ -460,47 +606,81 @@ class _FixturesPageState extends State<FixturesPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const Center(child: CircularProgressIndicator());
-    if (rows.isEmpty) return const Center(child: Text('No matches yet'));
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView.separated(
-        padding: const EdgeInsets.all(16),
-        itemCount: rows.length,
-        separatorBuilder: (_, index) => const SizedBox(height: 10),
-        itemBuilder: (context, index) {
-          final match = Map<String, dynamic>.from(rows[index] as Map);
-          final score = Map<String, dynamic>.from(match['score'] as Map? ?? {});
-          return Card(
-            child: InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => MatchPage(api: widget.api, matchId: match['match_id'] as String, onQueued: widget.onQueued))),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        _StatusPill(match['status']?.toString() ?? ''),
-                        const Spacer(),
-                        Text(_when(match['starts_at']?.toString()), style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(child: Text('${match['home']}', style: const TextStyle(fontWeight: FontWeight.w700))),
-                        Text('${score['home'] ?? 0}  –  ${score['away'] ?? 0}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-                        Expanded(child: Text('${match['away']}', textAlign: TextAlign.end, style: const TextStyle(fontWeight: FontWeight.w700))),
-                      ],
-                    ),
-                  ],
+    if (loading) return const _LoadingList();
+    if (rows.isEmpty) return const Center(child: Text('No matches yet. Pull to refresh when you are online.'));
+    final shown = rows.where((raw) {
+      final status = (raw as Map)['status'];
+      if (filter == 'Live') return status == 'in_progress';
+      if (filter == 'Upcoming') return status == 'upcoming';
+      if (filter == 'Finished') return status == 'completed';
+      return true;
+    }).toList();
+    return Column(
+      children: [
+        SizedBox(
+          height: 52,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            children: [
+              for (final name in const ['All', 'Live', 'Upcoming', 'Finished'])
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: FilterChip(
+                    label: Text(name),
+                    selected: filter == name,
+                    onSelected: (_) => setState(() => filter = name),
+                  ),
                 ),
-              ),
-            ),
-          );
-        },
-      ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: shown.isEmpty
+              ? const Center(child: Text('No matches in this view.'))
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView.separated(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(16),
+                    itemCount: shown.length,
+                    separatorBuilder: (_, index) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      final match = Map<String, dynamic>.from(shown[index] as Map);
+                      final score = Map<String, dynamic>.from(match['score'] as Map? ?? {});
+                      return Card(
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => MatchPage(api: widget.api, matchId: match['match_id'] as String, onQueued: widget.onQueued))),
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                            child: Column(
+                              children: [
+                                Row(
+                                  children: [
+                                    _StatusPill(match['status']?.toString() ?? ''),
+                                    const Spacer(),
+                                    Text(_when(match['starts_at']?.toString()), style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    Expanded(child: Text('${match['home']}', style: const TextStyle(fontWeight: FontWeight.w700))),
+                                    Text('${score['home'] ?? 0}  –  ${score['away'] ?? 0}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                                    Expanded(child: Text('${match['away']}', textAlign: TextAlign.end, style: const TextStyle(fontWeight: FontWeight.w700))),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+        ),
+      ],
     );
   }
 }
@@ -695,7 +875,7 @@ class _StandingsPageState extends State<StandingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const Center(child: CircularProgressIndicator());
+    if (loading) return const _LoadingList();
     if (table.isEmpty) return const Center(child: Text('No matches yet'));
     return RefreshIndicator(
       onRefresh: _load,
@@ -730,7 +910,13 @@ class _StandingsPageState extends State<StandingsPage> {
                         child: Text('${row['rank']}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
                       ),
                       title: Text('${row['team_id']}', style: const TextStyle(fontWeight: FontWeight.w700)),
-                      subtitle: Text(_words('${row['status']}')),
+                      subtitle: Row(
+                        children: [
+                          Icon(_standingIcon('${row['status']}'), size: 14),
+                          const SizedBox(width: 4),
+                          Text(_words('${row['status']}')),
+                        ],
+                      ),
                       trailing: Text('${row['won']}-${row['drawn']}-${row['lost']}    ${row['points']}', style: const TextStyle(fontWeight: FontWeight.w700)),
                     );
                   }),
@@ -755,6 +941,7 @@ class _StorePageState extends State<StorePage> {
   List<dynamic> products = [];
   String? receipt;
   String? message;
+  bool loading = true;
 
   @override
   void initState() {
@@ -769,7 +956,7 @@ class _StorePageState extends State<StorePage> {
     } on ApiException catch (caught) {
       message = caught.message;
     }
-    if (mounted) setState(() {});
+    if (mounted) setState(() => loading = false);
   }
 
   Future<void> buy(String variantId) async {
@@ -797,7 +984,7 @@ class _StorePageState extends State<StorePage> {
       });
       final payload = data['receipt']['payload'];
       setState(() {
-        receipt = '${payload['order_id']}  PKR ${(payload['total_minor'] as int) / 100}';
+        receipt = '${payload['order_id']}\nPKR ${(payload['total_minor'] as int) / 100}';
         message = 'Payment captured. Receipt is ready.';
       });
     } on ApiException catch (caught) {
@@ -807,6 +994,7 @@ class _StorePageState extends State<StorePage> {
 
   @override
   Widget build(BuildContext context) {
+    if (loading) return const _LoadingList();
     if (products.isEmpty) return Center(child: Text(message ?? 'No products yet'));
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -818,7 +1006,7 @@ class _StorePageState extends State<StorePage> {
             child: ListTile(
               leading: const Icon(Icons.receipt_long),
               title: const Text('Receipt', style: TextStyle(fontWeight: FontWeight.w700)),
-              subtitle: Text(receipt!),
+              subtitle: Text(receipt!, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
             ),
           ),
           const SizedBox(height: 10),
@@ -834,13 +1022,24 @@ class _StorePageState extends State<StorePage> {
                   Text('${product['category']}', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                   for (final variant in (product['variants'] as List))
                     Padding(
-                      padding: const EdgeInsets.only(top: 10),
-                      child: Row(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Expanded(
-                            child: Text('Size ${variant['size']} · PKR ${((variant['price_minor'] as num) / 100).toStringAsFixed(0)} · ${variant['stock']} left'),
+                          Row(
+                            children: [
+                              Expanded(child: Text('Size ${variant['size']}  ·  ${(variant['stock'] as num) == 0 ? 'Sold out' : '${variant['stock']} in stock'}')),
+                              Text('PKR ${((variant['price_minor'] as num) / 100).toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                            ],
                           ),
-                          FilledButton(onPressed: () => buy(variant['variant_id'] as String), child: const Text('Buy')),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: double.infinity,
+                            child: FilledButton(
+                              onPressed: (variant['stock'] as num) == 0 ? null : () => buy(variant['variant_id'] as String),
+                              child: const Text('Buy'),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -867,6 +1066,7 @@ class ClubPage extends StatefulWidget {
 class _ClubPageState extends State<ClubPage> {
   Map<String, dynamic>? club;
   String? message;
+  bool loading = true;
 
   @override
   void initState() {
@@ -882,10 +1082,22 @@ class _ClubPageState extends State<ClubPage> {
       club = await widget.api.local.readMap('club');
       message = club == null ? caught.message : 'Showing the saved club.';
     }
-    if (mounted) setState(() {});
+    if (mounted) setState(() => loading = false);
   }
 
   Future<void> _transfer() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Transfer Demo Back?'),
+        content: const Text('This moves the player to Alpha Reserves. If you are offline, it stays on this phone until sync.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Transfer')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
     final body = {
       'request_id': 'tr-${DateTime.now().millisecondsSinceEpoch}',
       'league_id': 'demo-roster',
@@ -924,7 +1136,8 @@ class _ClubPageState extends State<ClubPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (club == null) return Center(child: Text(message ?? 'Loading club…'));
+    if (loading && club == null) return const _LoadingList();
+    if (club == null) return Center(child: Text(message ?? 'Club could not be loaded.'));
     final staff = Map<String, dynamic>.from(club!['staff'] as Map? ?? {});
     final venue = Map<String, dynamic>.from(club!['venue'] as Map? ?? {});
     final roster = (club!['roster'] as List? ?? []);
@@ -1010,6 +1223,177 @@ IconData _linkIcon(String link) {
   if (link == 'Offline') return Icons.cloud_off;
   if (link == 'Syncing') return Icons.sync;
   return Icons.cloud_done;
+}
+
+class MorePage extends StatelessWidget {
+  const MorePage({super.key, required this.api, required this.queue, required this.onSync, required this.onLogout});
+  final Api api;
+  final List<Map<String, dynamic>> queue;
+  final VoidCallback onSync;
+  final VoidCallback onLogout;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final role = api.role.replaceAll('_', ' ');
+    final initial = api.name.isEmpty ? 'N' : api.name[0].toUpperCase();
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(color: scheme.primary, borderRadius: BorderRadius.circular(20)),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 28,
+                backgroundColor: Colors.white,
+                child: Text(initial, style: TextStyle(color: scheme.primary, fontSize: 22, fontWeight: FontWeight.w800)),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(api.name.isEmpty ? 'Signed in' : api.name, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 2),
+                    Text(role.isEmpty ? 'Member' : role, style: const TextStyle(color: Colors.white70)),
+                    Text(api.tenantName.isEmpty ? 'NaSCon League' : api.tenantName, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(_linkIcon(api.link), color: scheme.primary),
+                    const SizedBox(width: 8),
+                    Text(api.link, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(api.base, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
+                const SizedBox(height: 14),
+                SizedBox(width: double.infinity, child: FilledButton.icon(onPressed: onSync, icon: const Icon(Icons.sync), label: const Text('Sync now'))),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _Section(queue.isEmpty ? 'Nothing waiting' : 'Waiting to sync'),
+        const SizedBox(height: 8),
+        if (queue.isEmpty)
+          const _Note(text: 'You are up to date. Offline changes will show up here.')
+        else
+          for (final row in queue) ...[
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.schedule),
+                title: Text('${row['label']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                subtitle: const Text('Saved on this phone'),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        const SizedBox(height: 8),
+        const _Note(text: 'Score a match from Fixtures. Transfer a player from Club.'),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () async {
+              final leave = await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Sign out?'),
+                  content: Text(queue.isEmpty ? 'You can sign in again with a demo account.' : 'You still have ${queue.length} action(s) on this phone. They stay until this phone syncs.'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Stay')),
+                    FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sign out')),
+                  ],
+                ),
+              );
+              if (leave == true) {
+                await api.logout();
+                onLogout();
+              }
+            },
+            icon: const Icon(Icons.logout),
+            label: const Text('Sign out'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SyncChip extends StatelessWidget {
+  const _SyncChip({required this.link, required this.onTap});
+  final String link;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    return Padding(
+      padding: const EdgeInsets.only(right: 12),
+      child: Tooltip(
+        message: '$link. Tap to sync',
+        child: Material(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(20),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(link == 'Syncing' ? Icons.sync : _linkIcon(link), size: 16, color: primary),
+                  const SizedBox(width: 4),
+                  Text(link, style: TextStyle(color: primary, fontWeight: FontWeight.w800, fontSize: 12)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+IconData _standingIcon(String status) {
+  if (status == 'clinched') return Icons.verified;
+  if (status == 'eliminated') return Icons.cancel;
+  return Icons.hourglass_bottom;
+}
+
+class _LoadingList extends StatelessWidget {
+  const _LoadingList();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.surfaceContainerHighest;
+    return ListView(
+      physics: const NeverScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(16),
+      children: [
+        for (var i = 0; i < 4; i++) ...[
+          Container(height: 92, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(16))),
+          const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
 }
 
 class _Section extends StatelessWidget {
