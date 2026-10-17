@@ -245,6 +245,10 @@ def create_app() -> FastAPI:
             match = db.get(__import__("app.models", fromlist=["Match"]).Match, match_id)
             view["pinned_variant_id"] = match.pinned_variant_id
             view["starts_at"] = match.starts_at
+            sport = db.get(__import__("app.models", fromlist=["Sport"]).Sport, match.sport_id)
+            config = sport.config if sport is not None else {}
+            events = config.get("scoring_events") if isinstance(config, dict) else None
+            view["scoring_events"] = list(events) if isinstance(events, dict) else []
             return view
         return db_call(work)
 

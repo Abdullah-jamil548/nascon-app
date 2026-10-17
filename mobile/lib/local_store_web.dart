@@ -39,4 +39,8 @@ class LocalStore {
   Future<void> clearDone() async {
     _queue.removeWhere((row) => row['result'] != null);
   }
+
+  Future<String> savePdf(String name, String base64Pdf) async {
+    return 'Open the phone app to save $name.pdf.';
+  }
 }

@@ -743,7 +743,7 @@ def club_profile(db: Session, club_id: str) -> dict:
         raise ApiError(404, "SQUAD_NOT_FOUND", "Club does not exist.")
     tenant = db.get(Tenant, club.tenant_id)
     roster = [
-        {"player_id": row.player_id, "name": row.name, "position": row.position, "role": row.role, "squad_id": row.squad_id}
+        {"player_id": row.player_id, "name": row.name, "position": row.position, "role": row.role, "squad_id": row.squad_id, "league_id": row.league_id}
         for row in db.scalars(select(Player).where(Player.club_id == club_id))
     ]
     return {

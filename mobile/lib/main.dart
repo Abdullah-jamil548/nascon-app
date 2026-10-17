@@ -105,6 +105,8 @@ class Api {
   String name = '';
   String tenantName = '';
   String link = 'Syncing';
+  String? highlight;
+  void Function()? onExpired;
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -118,26 +120,17 @@ class Api {
   Future<bool> phoneHasNetwork() async {
     try {
       final results = await Connectivity().checkConnectivity();
+      if (results.isEmpty) return true;
       return results.any((item) => item != ConnectivityResult.none);
     } catch (_) {
-      return false;
+      return true;
     }
   }
 
   Future<bool> probe() async {
-    if (!await phoneHasNetwork()) {
-      link = 'Offline';
-      return false;
-    }
-    try {
-      final response = await http.get(Uri.parse('$base/health')).timeout(const Duration(seconds: 4));
-      final online = response.statusCode == 200;
-      link = online ? 'Online' : 'Offline';
-      return online;
-    } catch (_) {
-      link = 'Offline';
-      return false;
-    }
+    final online = await phoneHasNetwork();
+    link = online ? 'Online' : 'Offline';
+    return online;
   }
 
   Future<void> saveBase(String value) async {
@@ -164,14 +157,22 @@ class Api {
       if (response.statusCode >= 400) {
         final error = decoded['error'];
         final message = error is Map ? (error['message'] ?? 'Request failed') : 'Request failed';
+        if (response.statusCode == 401 && token != null && !path.contains('/auth/login')) {
+          await logout();
+          onExpired?.call();
+          throw ApiException('Your session ended. Sign in again.');
+        }
         throw ApiException(message.toString());
       }
       link = await phoneHasNetwork() ? 'Online' : 'Offline';
       return decoded;
     } catch (error) {
       if (error is ApiException) rethrow;
-      link = 'Offline';
-      throw ApiException('You are offline. Saved screens are still available.');
+      if (!await phoneHasNetwork()) {
+        link = 'Offline';
+        throw ApiException('You are offline. Saved screens are still available.');
+      }
+      throw ApiException('The server did not answer. Check the server address.');
     }
   }
 
@@ -225,6 +226,9 @@ class _RootPageState extends State<RootPage> {
   }
 
   Future<void> _boot() async {
+    widget.api.onExpired = () {
+      if (mounted) setState(() => signedIn = false);
+    };
     await widget.api.load();
     final tenant = await widget.api.local.readMap('tenant');
     if (tenant != null) {
@@ -404,6 +408,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   int tab = 0;
   List<Map<String, dynamic>> queue = [];
+  List<String> reports = [];
   StreamSubscription<List<ConnectivityResult>>? _net;
   Timer? _ticker;
 
@@ -412,12 +417,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadQueue();
-    _net = Connectivity().onConnectivityChanged.listen((results) {
+    _net = Connectivity().onConnectivityChanged.listen((results) async {
       final connected = results.any((item) => item != ConnectivityResult.none);
       if (!connected) {
-        if (mounted) setState(() => widget.api.link = 'Offline');
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        if (!mounted || await widget.api.phoneHasNetwork()) return;
+        setState(() => widget.api.link = 'Offline');
         return;
       }
+      if (!mounted) return;
+      setState(() => widget.api.link = 'Online');
       _sync(automatic: true);
     });
     _ticker = Timer.periodic(const Duration(seconds: 3), (_) => _watch());
@@ -472,6 +481,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
       return;
     }
+    var synced = false;
     try {
       final actions = rows.map((row) => row['action'] as Map<String, dynamic>).toList();
       final result = await widget.api.send('POST', '/api/v1/offline-sync', {'device_id': 'phone-1', 'actions': actions});
@@ -486,27 +496,34 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 ? 'Already synced'
                 : 'Not applied: ${_plain(reason?.toString())}';
         await widget.api.local.mark(rows[i]['id'] as int, text);
+        reports.insert(0, '${rows[i]['label']}: $text');
       }
       await widget.api.local.clearDone();
       widget.api.link = 'Online';
+      synced = true;
     } on ApiException {
       final stillOnline = await widget.api.probe();
       widget.api.link = stillOnline ? 'Online' : 'Offline';
     }
     await _loadQueue();
     if (!automatic && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(widget.api.link == 'Online' ? 'Synced' : 'Could not sync. Saved on this phone.')));
+      final text = synced
+          ? 'Synced'
+          : widget.api.link == 'Offline'
+              ? 'No connection. Changes stay on this phone.'
+              : 'The server did not answer. Your phone is still online.';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final pages = [
-      FixturesPage(api: widget.api, onQueued: _loadQueue),
-      StandingsPage(api: widget.api),
+      FixturesPage(api: widget.api, onQueued: _loadQueue, onOpenTab: (index) => setState(() => tab = index)),
+      StandingsPage(api: widget.api, onQueued: _loadQueue, onOpenTab: (index) => setState(() => tab = index)),
       StorePage(api: widget.api),
       ClubPage(api: widget.api, onQueued: _loadQueue),
-      MorePage(api: widget.api, queue: queue, onSync: () => _sync(), onLogout: widget.onLogout),
+      MorePage(api: widget.api, queue: queue, reports: reports, onSync: () => _sync(), onLogout: widget.onLogout, onChanged: () => setState(() {})),
     ];
     final role = widget.api.role.replaceAll('_', ' ');
     final title = widget.api.tenantName.isEmpty ? 'NaSCon League' : widget.api.tenantName;
@@ -558,7 +575,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         selectedIndex: tab,
         onDestinationSelected: (value) => setState(() => tab = value),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.sports_soccer), label: 'Fixtures'),
+          NavigationDestination(icon: Icon(Icons.home), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.leaderboard), label: 'Standings'),
           NavigationDestination(icon: Icon(Icons.storefront), label: 'Store'),
           NavigationDestination(icon: Icon(Icons.shield), label: 'Club'),
@@ -570,9 +587,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 }
 
 class FixturesPage extends StatefulWidget {
-  const FixturesPage({super.key, required this.api, required this.onQueued});
+  const FixturesPage({super.key, required this.api, required this.onQueued, required this.onOpenTab});
   final Api api;
   final Future<void> Function() onQueued;
+  final void Function(int index) onOpenTab;
 
   @override
   State<FixturesPage> createState() => _FixturesPageState();
@@ -583,6 +601,8 @@ class _FixturesPageState extends State<FixturesPage> {
   String? error;
   bool loading = true;
   String filter = 'All';
+  String sport = 'All';
+  String league = 'All';
 
   @override
   void initState() {
@@ -608,22 +628,59 @@ class _FixturesPageState extends State<FixturesPage> {
   Widget build(BuildContext context) {
     if (loading) return const _LoadingList();
     if (rows.isEmpty) return const Center(child: Text('No matches yet. Pull to refresh when you are online.'));
+    final sports = <String>{'All'};
+    final leagues = <String>{'All'};
+    for (final raw in rows) {
+      final row = raw as Map;
+      sports.add('${row['sport_id']}');
+      leagues.add('${row['league_id']}');
+    }
     final shown = rows.where((raw) {
-      final status = (raw as Map)['status'];
+      final row = raw as Map;
+      final status = row['status'];
+      if (sport != 'All' && row['sport_id'] != sport) return false;
+      if (league != 'All' && row['league_id'] != league) return false;
       if (filter == 'Live') return status == 'in_progress';
       if (filter == 'Upcoming') return status == 'upcoming';
       if (filter == 'Finished') return status == 'completed';
+      if (filter == 'Postponed') return status == 'postponed';
       return true;
     }).toList();
+    final live = rows.where((raw) => (raw as Map)['status'] == 'in_progress').length;
     return Column(
       children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: _Panel(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(live == 0 ? 'No match is live' : '$live live now', style: const TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 4),
+                  Text('${widget.api.name.isEmpty ? 'Welcome' : widget.api.name} · ${widget.api.role.replaceAll('_', ' ')}'),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      ActionChip(label: const Text('Standings'), onPressed: () => widget.onOpenTab(1)),
+                      ActionChip(label: const Text('Store'), onPressed: () => widget.onOpenTab(2)),
+                      ActionChip(label: const Text('Club'), onPressed: () => widget.onOpenTab(3)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
         SizedBox(
           height: 52,
           child: ListView(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             children: [
-              for (final name in const ['All', 'Live', 'Upcoming', 'Finished'])
+              for (final name in const ['All', 'Live', 'Upcoming', 'Finished', 'Postponed'])
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: FilterChip(
@@ -632,6 +689,26 @@ class _FixturesPageState extends State<FixturesPage> {
                     onSelected: (_) => setState(() => filter = name),
                   ),
                 ),
+              for (final name in sports)
+                if (name != 'All')
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilterChip(
+                      label: Text(_pretty(name)),
+                      selected: sport == name,
+                      onSelected: (_) => setState(() => sport = sport == name ? 'All' : name),
+                    ),
+                  ),
+              for (final name in leagues)
+                if (name != 'All')
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilterChip(
+                      label: Text(_pretty(name)),
+                      selected: league == name,
+                      onSelected: (_) => setState(() => league = league == name ? 'All' : name),
+                    ),
+                  ),
             ],
           ),
         ),
@@ -648,30 +725,23 @@ class _FixturesPageState extends State<FixturesPage> {
                     itemBuilder: (context, index) {
                       final match = Map<String, dynamic>.from(shown[index] as Map);
                       final score = Map<String, dynamic>.from(match['score'] as Map? ?? {});
-                      return Card(
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(16),
-                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => MatchPage(api: widget.api, matchId: match['match_id'] as String, onQueued: widget.onQueued))),
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                            child: Column(
-                              children: [
-                                Row(
-                                  children: [
-                                    _StatusPill(match['status']?.toString() ?? ''),
-                                    const Spacer(),
-                                    Text(_when(match['starts_at']?.toString()), style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
-                                  ],
-                                ),
-                                const SizedBox(height: 12),
-                                Row(
-                                  children: [
-                                    Expanded(child: Text('${match['home']}', style: const TextStyle(fontWeight: FontWeight.w700))),
-                                    Text('${score['home'] ?? 0}  –  ${score['away'] ?? 0}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-                                    Expanded(child: Text('${match['away']}', textAlign: TextAlign.end, style: const TextStyle(fontWeight: FontWeight.w700))),
-                                  ],
-                                ),
-                              ],
+                      final home = '${match['home']}';
+                      final away = '${match['away']}';
+                      return _FixtureCard(
+                        status: '${match['status']}',
+                        when: _when(match['starts_at']?.toString()),
+                        home: home,
+                        away: away,
+                        homeScore: '${score['home'] ?? 0}',
+                        awayScore: '${score['away'] ?? 0}',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => MatchPage(
+                              api: widget.api,
+                              matchId: match['match_id'] as String,
+                              onQueued: widget.onQueued,
+                              onOpenStore: () => widget.onOpenTab(2),
                             ),
                           ),
                         ),
@@ -686,10 +756,11 @@ class _FixturesPageState extends State<FixturesPage> {
 }
 
 class MatchPage extends StatefulWidget {
-  const MatchPage({super.key, required this.api, required this.matchId, required this.onQueued});
+  const MatchPage({super.key, required this.api, required this.matchId, required this.onQueued, required this.onOpenStore});
   final Api api;
   final String matchId;
   final Future<void> Function() onQueued;
+  final VoidCallback onOpenStore;
 
   @override
   State<MatchPage> createState() => _MatchPageState();
@@ -698,11 +769,20 @@ class MatchPage extends StatefulWidget {
 class _MatchPageState extends State<MatchPage> {
   Map<String, dynamic>? match;
   String? message;
+  String scoringSide = 'home';
+  Timer? _poll;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _poll = Timer.periodic(const Duration(seconds: 8), (_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -716,7 +796,7 @@ class _MatchPageState extends State<MatchPage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _score(String eventType) async {
+  Future<void> _score(String teamId, String eventType) async {
     final version = match?['version'] ?? 0;
     final eventId = 'evt-${DateTime.now().millisecondsSinceEpoch}';
     final action = {
@@ -728,7 +808,7 @@ class _MatchPageState extends State<MatchPage> {
         'event_id': eventId,
         'match_id': widget.matchId,
         'type': 'score',
-        'payload': {'team_id': match?['home']?['team_id'], 'event_type': eventType},
+        'payload': {'team_id': teamId, 'event_type': eventType},
       },
     };
     if (widget.api.link == 'Offline') {
@@ -788,54 +868,77 @@ class _MatchPageState extends State<MatchPage> {
     final away = Map<String, dynamic>.from(match!['away'] as Map? ?? {});
     final events = (match!['events'] as List? ?? []);
     final organizer = widget.api.role == 'league_organizer' || widget.api.role == 'super_admin';
+    final homeName = '${home['team_id'] ?? 'Home'}';
+    final awayName = '${away['team_id'] ?? 'Away'}';
+    final scoring = (match!['scoring_events'] as List? ?? []).map((item) => '$item').where((item) => item.isNotEmpty).toList();
+    final eventNames = scoring.isEmpty ? const ['goal'] : scoring;
+    final teamId = scoringSide == 'home' ? homeName : awayName;
     return Scaffold(
-      appBar: AppBar(title: const Text('Match')),
+      appBar: AppBar(title: Text('${_pretty(homeName)} vs ${_pretty(awayName)}')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
         children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 12),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Expanded(child: Text('${home['team_id']}', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w700))),
-                      Text('${home['score']} – ${away['score']}', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.w800)),
-                      Expanded(child: Text('${away['team_id']}', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w700))),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  _StatusPill('${match!['status']}'),
-                  const SizedBox(height: 4),
-                  Text(_words('${match!['outcome']}'), style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                ],
-              ),
-            ),
+          _Scoreboard(
+            home: homeName,
+            away: awayName,
+            homeScore: '${home['score'] ?? 0}',
+            awayScore: '${away['score'] ?? 0}',
+            status: '${match!['status']}',
+            outcome: _words('${match!['outcome']}'),
           ),
           if (match!['pinned_variant_id'] != null) ...[
-            const SizedBox(height: 10),
-            Card(child: ListTile(leading: const Icon(Icons.push_pin), title: const Text('Pinned product'), subtitle: Text('${match!['pinned_variant_id']}'))),
-          ],
-          const SizedBox(height: 18),
-          const _Section('Timeline'),
-          if (events.isEmpty) const Text('No events yet'),
-          for (final event in events) ...[
-            const SizedBox(height: 8),
-            Card(
+            const SizedBox(height: 12),
+            _Panel(
               child: ListTile(
-                title: Text(_words('${event['type']}')),
-                subtitle: Text('${event['payload']}'),
-                trailing: event['compensated'] == true ? const _StatusPill('corrected') : null,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+                leading: const Icon(Icons.push_pin),
+                title: const Text('Pinned product', style: TextStyle(fontWeight: FontWeight.w800)),
+                subtitle: Text('${match!['pinned_variant_id']}'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  widget.api.highlight = '${match!['pinned_variant_id']}';
+                  Navigator.pop(context);
+                  widget.onOpenStore();
+                },
               ),
             ),
           ],
-          if (message != null) ...[const SizedBox(height: 10), _Note(text: message!)],
+          const SizedBox(height: 20),
+          const _Section('Timeline'),
+          const SizedBox(height: 10),
+          if (events.isEmpty) const _Panel(child: Padding(padding: EdgeInsets.all(16), child: Text('No events yet'))),
+          for (var i = 0; i < events.length; i++)
+            _TimelineTile(
+              title: _eventTitle(events[i]),
+              detail: _eventDetail(events[i]),
+              corrected: events[i]['compensated'] == true,
+              last: i == events.length - 1,
+            ),
+          if (message != null) ...[const SizedBox(height: 12), _Note(text: message!)],
           if (organizer) ...[
-            const SizedBox(height: 12),
-            FilledButton(onPressed: () => _score('goal'), child: const Text('Add goal for home')),
+            const SizedBox(height: 16),
+            const _Section('Record a score'),
             const SizedBox(height: 8),
-            OutlinedButton(onPressed: _compensate, child: const Text('Correct last score')),
+            SegmentedButton<String>(
+              segments: [
+                ButtonSegment(value: 'home', label: Text(_pretty(homeName))),
+                ButtonSegment(value: 'away', label: Text(_pretty(awayName))),
+              ],
+              selected: {scoringSide},
+              onSelectionChanged: (value) => setState(() => scoringSide = value.first),
+            ),
+            const SizedBox(height: 8),
+            for (final event in eventNames) ...[
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => _score(teamId, event),
+                  child: Text('${_pretty(event)} for ${_pretty(teamId)}'),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            SizedBox(width: double.infinity, child: OutlinedButton(onPressed: _compensate, child: const Text('Correct last score'))),
           ],
         ],
       ),
@@ -844,8 +947,10 @@ class _MatchPageState extends State<MatchPage> {
 }
 
 class StandingsPage extends StatefulWidget {
-  const StandingsPage({super.key, required this.api});
+  const StandingsPage({super.key, required this.api, required this.onQueued, required this.onOpenTab});
   final Api api;
+  final Future<void> Function() onQueued;
+  final void Function(int index) onOpenTab;
 
   @override
   State<StandingsPage> createState() => _StandingsPageState();
@@ -853,6 +958,9 @@ class StandingsPage extends StatefulWidget {
 
 class _StandingsPageState extends State<StandingsPage> {
   List<dynamic> table = [];
+  List<dynamic> fixtures = [];
+  List<String> leagues = ['demo-league'];
+  String leagueId = 'demo-league';
   bool loading = true;
 
   @override
@@ -863,14 +971,70 @@ class _StandingsPageState extends State<StandingsPage> {
 
   Future<void> _load() async {
     try {
-      final data = await widget.api.send('GET', '/api/v1/standings/demo-league');
-      table = data['table'] as List? ?? [];
-      await widget.api.local.save('standings', data);
+      final listed = await widget.api.send('GET', '/api/v1/fixtures');
+      fixtures = listed['fixtures'] as List? ?? [];
+      final found = <String>{};
+      for (final raw in fixtures) {
+        final id = '${(raw as Map)['league_id'] ?? ''}';
+        if (id.isNotEmpty) found.add(id);
+      }
+      if (found.isNotEmpty) leagues = found.toList()..sort();
     } on ApiException {
-      final cached = await widget.api.local.readMap('standings');
+      final cached = await widget.api.local.readMap('fixtures');
+      fixtures = cached?['fixtures'] as List? ?? [];
+    }
+    try {
+      final data = await widget.api.send('GET', '/api/v1/standings/$leagueId');
+      table = data['table'] as List? ?? [];
+      await widget.api.local.save('standings-$leagueId', data);
+    } on ApiException {
+      final cached = await widget.api.local.readMap('standings-$leagueId') ?? await widget.api.local.readMap('standings');
       table = cached?['table'] as List? ?? [];
     }
     if (mounted) setState(() => loading = false);
+  }
+
+  void _openTeam(String teamId) {
+    final page = context;
+    final matches = fixtures.where((raw) {
+      final row = raw as Map;
+      return row['home'] == teamId || row['away'] == teamId;
+    }).toList();
+    showModalBottomSheet<void>(
+      context: page,
+      showDragHandle: true,
+      builder: (context) => ListView(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        children: [
+          Text(_pretty(teamId), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          if (matches.isEmpty) const Text('No matches for this team.'),
+          for (final raw in matches)
+            Builder(builder: (context) {
+              final row = Map<String, dynamic>.from(raw as Map);
+              return ListTile(
+                title: Text('${_pretty('${row['home']}')} vs ${_pretty('${row['away']}')}'),
+                subtitle: Text(_words('${row['status']}')),
+                onTap: () {
+                  final matchId = row['match_id'] as String;
+                  Navigator.pop(context);
+                  Navigator.push(
+                    page,
+                    MaterialPageRoute(
+                      builder: (_) => MatchPage(
+                        api: widget.api,
+                        matchId: matchId,
+                        onQueued: widget.onQueued,
+                        onOpenStore: () => widget.onOpenTab(2),
+                      ),
+                    ),
+                  );
+                },
+              );
+            }),
+        ],
+      ),
+    );
   }
 
   @override
@@ -883,41 +1047,87 @@ class _StandingsPageState extends State<StandingsPage> {
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
         children: [
-          const _Section('Demo league'),
+          SizedBox(
+            height: 44,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                for (final id in leagues)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilterChip(
+                      label: Text(_pretty(id)),
+                      selected: leagueId == id,
+                      onSelected: (_) {
+                        setState(() {
+                          leagueId = id;
+                          loading = true;
+                        });
+                        _load();
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          ),
           const SizedBox(height: 8),
-          Card(
+          _Panel(
             child: Column(
               children: [
                 const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  padding: EdgeInsets.fromLTRB(14, 14, 14, 8),
                   child: Row(
                     children: [
-                      SizedBox(width: 28, child: Text('#', style: TextStyle(fontWeight: FontWeight.w700))),
-                      Expanded(child: Text('Team', style: TextStyle(fontWeight: FontWeight.w700))),
-                      Text('W-D-L', style: TextStyle(fontWeight: FontWeight.w700)),
-                      SizedBox(width: 48, child: Text('Pts', textAlign: TextAlign.end, style: TextStyle(fontWeight: FontWeight.w700))),
+                      SizedBox(width: 36, child: Text('#', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800))),
+                      Expanded(child: Text('Team', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800))),
+                      _Col('W', 22),
+                      _Col('D', 22),
+                      _Col('L', 22),
+                      _Col('Pts', 32),
                     ],
                   ),
                 ),
+                const Divider(height: 1),
                 for (final raw in table)
                   Builder(builder: (context) {
                     final row = Map<String, dynamic>.from(raw as Map);
-                    return ListTile(
-                      dense: true,
-                      leading: CircleAvatar(
-                        radius: 14,
-                        backgroundColor: row['rank'] == 1 ? Theme.of(context).colorScheme.secondary : Theme.of(context).colorScheme.surfaceContainerHighest,
-                        child: Text('${row['rank']}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
+                    final rank = row['rank'];
+                    final diff = row['diff'];
+                    final diffText = diff is num && diff > 0 ? '+$diff' : '$diff';
+                    return InkWell(
+                      onTap: () => _openTeam('${row['team_id']}'),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 36,
+                              child: CircleAvatar(
+                                radius: 12,
+                                backgroundColor: rank == 1 ? Theme.of(context).colorScheme.secondary : Theme.of(context).colorScheme.surfaceContainerHighest,
+                                child: Text('$rank', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800)),
+                              ),
+                            ),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(_pretty('${row['team_id']}'), style: const TextStyle(fontWeight: FontWeight.w800)),
+                                  Text(
+                                    'P ${row['played']} · ${row['scored']}-${row['conceded']} · GD $diffText',
+                                    style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                                  ),
+                                  Text(_words('${row['status']}'), style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                                ],
+                              ),
+                            ),
+                            _Col('${row['won']}', 22),
+                            _Col('${row['drawn']}', 22),
+                            _Col('${row['lost']}', 22),
+                            _Col('${row['points']}', 32, strong: true),
+                          ],
+                        ),
                       ),
-                      title: Text('${row['team_id']}', style: const TextStyle(fontWeight: FontWeight.w700)),
-                      subtitle: Row(
-                        children: [
-                          Icon(_standingIcon('${row['status']}'), size: 14),
-                          const SizedBox(width: 4),
-                          Text(_words('${row['status']}')),
-                        ],
-                      ),
-                      trailing: Text('${row['won']}-${row['drawn']}-${row['lost']}    ${row['points']}', style: const TextStyle(fontWeight: FontWeight.w700)),
                     );
                   }),
               ],
@@ -939,7 +1149,8 @@ class StorePage extends StatefulWidget {
 
 class _StorePageState extends State<StorePage> {
   List<dynamic> products = [];
-  String? receipt;
+  final List<Map<String, dynamic>> cart = [];
+  Map<String, dynamic>? lastOrder;
   String? message;
   bool loading = true;
 
@@ -950,106 +1161,445 @@ class _StorePageState extends State<StorePage> {
   }
 
   Future<void> _load() async {
+    final cached = await widget.api.local.readMap('products');
+    if (cached != null) {
+      products = cached['products'] as List? ?? products;
+    }
     try {
       final data = await widget.api.send('GET', '/api/v1/products');
       products = data['products'] as List? ?? [];
+      await widget.api.local.save('products', data);
+      message = null;
     } on ApiException catch (caught) {
-      message = caught.message;
+      message = products.isEmpty ? caught.message : null;
     }
     if (mounted) setState(() => loading = false);
   }
 
-  Future<void> buy(String variantId) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Buy this item?'),
-        content: const Text('The mock gateway will take payment.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Buy')),
-        ],
+  void add(Map<String, dynamic> variant, String productName) {
+    final id = '${variant['variant_id']}';
+    final stock = variant['stock'] is num ? (variant['stock'] as num).toInt() : 0;
+    if (stock < 1) {
+      setState(() => message = 'That size is sold out.');
+      return;
+    }
+    final existing = cart.where((row) => row['variant_id'] == id);
+    if (existing.isNotEmpty) {
+      final row = existing.first;
+      if ((row['qty'] as int) >= stock) {
+        setState(() => message = 'Only $stock left.');
+        return;
+      }
+      setState(() {
+        row['qty'] = (row['qty'] as int) + 1;
+        message = 'Quantity updated.';
+      });
+      return;
+    }
+    setState(() {
+      cart.add({
+        'variant_id': id,
+        'name': productName,
+        'size': variant['size'],
+        'color': variant['color'],
+        'price_minor': variant['price_minor'],
+        'stock': stock,
+        'qty': 1,
+      });
+      message = 'Added to cart.';
+    });
+  }
+
+  Future<void> _openCart() async {
+    final order = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(builder: (_) => CartPage(api: widget.api, cart: cart)),
+    );
+    if (!mounted || order == null) {
+      setState(() {});
+      return;
+    }
+    cart.clear();
+    setState(() {
+      lastOrder = order;
+      message = 'Payment captured. Receipt is ready.';
+    });
+    if (!mounted) return;
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => ReceiptPage(api: widget.api, order: order)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading && products.isEmpty) return const _LoadingList();
+    if (products.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: _Panel(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.storefront, size: 36),
+                  const SizedBox(height: 12),
+                  Text(message ?? 'No products yet', textAlign: TextAlign.center),
+                  const SizedBox(height: 16),
+                  FilledButton(onPressed: () { setState(() => loading = true); _load(); }, child: const Text('Try again')),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    final count = cart.fold<int>(0, (sum, row) => sum + (row['qty'] as int));
+    return Column(
+      children: [
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
+              children: [
+                if (message != null) ...[_Note(text: message!), const SizedBox(height: 10)],
+                if (lastOrder != null) ...[
+                  _Panel(
+                    child: ListTile(
+                      leading: const Icon(Icons.receipt_long),
+                      title: const Text('Latest receipt', style: TextStyle(fontWeight: FontWeight.w800)),
+                      subtitle: Text('${lastOrder!['order_id']} · PKR ${_money(lastOrder!['total_minor'])}'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReceiptPage(api: widget.api, order: lastOrder!))),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                for (final raw in products) ...[
+                  _ProductCard(
+                    product: Map<String, dynamic>.from(raw as Map),
+                    highlight: widget.api.highlight,
+                    onAdd: add,
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ],
+            ),
+          ),
+        ),
+        if (cart.isNotEmpty)
+          Material(
+            elevation: 8,
+            child: SafeArea(
+              top: false,
+              child: ListTile(
+                title: Text('$count in cart', style: const TextStyle(fontWeight: FontWeight.w800)),
+                trailing: FilledButton(onPressed: _openCart, child: const Text('Checkout')),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ProductCard extends StatelessWidget {
+  const _ProductCard({required this.product, required this.onAdd, this.highlight});
+  final Map<String, dynamic> product;
+  final String? highlight;
+  final void Function(Map<String, dynamic> variant, String productName) onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final variants = (product['variants'] as List? ?? []);
+    return _Panel(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${product['name']}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 4),
+            Text('${product['category']}', style: TextStyle(color: scheme.onSurfaceVariant)),
+            if ('${product['description'] ?? ''}'.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text('${product['description']}'),
+            ],
+            for (final raw in variants)
+              Builder(builder: (context) {
+                final variant = Map<String, dynamic>.from(raw as Map);
+                final stock = variant['stock'] is num ? variant['stock'] as num : 0;
+                final price = variant['price_minor'] is num ? (variant['price_minor'] as num) / 100 : 0;
+                final soldOut = stock == 0;
+                final marked = highlight != null && highlight == '${variant['variant_id']}';
+                return Padding(
+                  padding: const EdgeInsets.only(top: 14),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: marked ? scheme.primary : scheme.outlineVariant),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(child: Text('Size ${variant['size']} · ${variant['color'] ?? 'one color'}')),
+                            Text('PKR ${price.toStringAsFixed(0)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(soldOut ? 'Sold out' : '$stock in stock', style: TextStyle(color: scheme.onSurfaceVariant)),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton(
+                            onPressed: soldOut ? null : () => onAdd(variant, '${product['name']}'),
+                            child: Text(soldOut ? 'Sold out' : 'Add to cart'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }),
+          ],
+        ),
       ),
     );
-    if (confirm != true) return;
+  }
+}
+
+class CartPage extends StatefulWidget {
+  const CartPage({super.key, required this.api, required this.cart});
+  final Api api;
+  final List<Map<String, dynamic>> cart;
+
+  @override
+  State<CartPage> createState() => _CartPageState();
+}
+
+class _CartPageState extends State<CartPage> {
+  final discount = TextEditingController(text: 'WELCOME10');
+  String payment = 'tok_success';
+  String? message;
+  bool busy = false;
+
+  @override
+  void dispose() {
+    discount.dispose();
+    super.dispose();
+  }
+
+  int get _subtotal => widget.cart.fold<int>(0, (sum, row) {
+        final price = row['price_minor'] is num ? (row['price_minor'] as num).toInt() : 0;
+        return sum + price * (row['qty'] as int);
+      });
+
+  int get _discount {
+    final code = discount.text.trim().toUpperCase();
+    return code == 'WELCOME10' ? (_subtotal * 10) ~/ 100 : 0;
+  }
+
+  Future<void> _pay() async {
+    if (widget.cart.isEmpty) return;
+    setState(() {
+      busy = true;
+      message = null;
+    });
+    final code = discount.text.trim();
     try {
       final data = await widget.api.send('POST', '/api/v1/checkout', {
         'order_id': 'ord-${DateTime.now().millisecondsSinceEpoch}',
         'customer_id': 'phone-user',
         'items': [
-          {'variant_id': variantId, 'quantity': 1}
+          for (final row in widget.cart) {'variant_id': row['variant_id'], 'quantity': row['qty']},
         ],
-        'discount_code': 'WELCOME10',
-        'payment': {'token': 'tok_success'},
+        'discount_code': code.isEmpty ? null : code,
+        'payment': {'token': payment},
       });
-      final payload = data['receipt']['payload'];
-      setState(() {
-        receipt = '${payload['order_id']}\nPKR ${(payload['total_minor'] as int) / 100}';
-        message = 'Payment captured. Receipt is ready.';
-      });
+      if (!mounted) return;
+      Navigator.pop(context, data);
     } on ApiException catch (caught) {
-      setState(() => message = caught.message);
+      setState(() {
+        busy = false;
+        message = caught.message;
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const _LoadingList();
-    if (products.isEmpty) return Center(child: Text(message ?? 'No products yet'));
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        if (message != null) ...[_Note(text: message!), const SizedBox(height: 10)],
-        if (receipt != null) ...[
-          Card(
-            color: const Color(0xFFE8F6EE),
-            child: ListTile(
-              leading: const Icon(Icons.receipt_long),
-              title: const Text('Receipt', style: TextStyle(fontWeight: FontWeight.w700)),
-              subtitle: Text(receipt!, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+    return Scaffold(
+      appBar: AppBar(title: const Text('Cart')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (widget.cart.isEmpty) const Text('Your cart is empty.'),
+          for (final row in widget.cart) ...[
+            _Panel(
+              child: ListTile(
+                title: Text('${row['name']}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                subtitle: Text('Size ${row['size']} · ${row['color']} · PKR ${_money(row['price_minor'])}'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      onPressed: () => setState(() {
+                        final qty = row['qty'] as int;
+                        if (qty <= 1) {
+                          widget.cart.remove(row);
+                        } else {
+                          row['qty'] = qty - 1;
+                        }
+                      }),
+                      icon: const Icon(Icons.remove),
+                    ),
+                    Text('${row['qty']}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                    IconButton(
+                      onPressed: () => setState(() {
+                        final qty = row['qty'] as int;
+                        final stock = row['stock'] is num ? (row['stock'] as num).toInt() : qty;
+                        if (qty < stock) row['qty'] = qty + 1;
+                      }),
+                      icon: const Icon(Icons.add),
+                    ),
+                  ],
+                ),
+              ),
             ),
+            const SizedBox(height: 8),
+          ],
+          const SizedBox(height: 8),
+          TextField(
+            controller: discount,
+            decoration: const InputDecoration(labelText: 'Discount code', border: OutlineInputBorder()),
+            onChanged: (_) => setState(() {}),
           ),
-          const SizedBox(height: 10),
-        ],
-        for (final product in products) ...[
-          Card(
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: payment,
+            decoration: const InputDecoration(labelText: 'Mock payment', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'tok_success', child: Text('Successful payment')),
+              DropdownMenuItem(value: 'tok_declined', child: Text('Declined card')),
+              DropdownMenuItem(value: 'tok_capture_fail', child: Text('Capture fails')),
+            ],
+            onChanged: (value) => setState(() => payment = value ?? 'tok_success'),
+          ),
+          const SizedBox(height: 16),
+          _Panel(
             child: Padding(
               padding: const EdgeInsets.all(14),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(product['name'] as String, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-                  Text('${product['category']}', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                  for (final variant in (product['variants'] as List))
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(child: Text('Size ${variant['size']}  ·  ${(variant['stock'] as num) == 0 ? 'Sold out' : '${variant['stock']} in stock'}')),
-                              Text('PKR ${((variant['price_minor'] as num) / 100).toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.w800)),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          SizedBox(
-                            width: double.infinity,
-                            child: FilledButton(
-                              onPressed: (variant['stock'] as num) == 0 ? null : () => buy(variant['variant_id'] as String),
-                              child: const Text('Buy'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                  _MoneyRow('Subtotal', _subtotal),
+                  _MoneyRow('Discount', _discount),
+                  _MoneyRow('Total', _subtotal - _discount, strong: true),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          if (message != null) ...[const SizedBox(height: 12), _Note(text: message!, error: true)],
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: busy || widget.cart.isEmpty ? null : _pay,
+            child: Text(busy ? 'Paying…' : 'Place order'),
+          ),
         ],
-      ],
+      ),
+    );
+  }
+}
+
+class _MoneyRow extends StatelessWidget {
+  const _MoneyRow(this.label, this.minor, {this.strong = false});
+  final String label;
+  final int minor;
+  final bool strong;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextStyle(fontWeight: strong ? FontWeight.w800 : FontWeight.w500, fontSize: strong ? 18 : 14);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: style)),
+          Text('PKR ${_money(minor)}', style: style),
+        ],
+      ),
+    );
+  }
+}
+
+class ReceiptPage extends StatelessWidget {
+  const ReceiptPage({super.key, required this.api, required this.order});
+  final Api api;
+  final Map<String, dynamic> order;
+
+  Future<void> _save(BuildContext context) async {
+    final pdf = order['receipt'] is Map ? order['receipt']['pdf_base64'] : null;
+    if (pdf is! String || pdf.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This receipt has no PDF.')));
+      return;
+    }
+    try {
+      await api.local.savePdf('${order['order_id']}', pdf);
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('The PDF could not be saved.')));
+      return;
+    }
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PDF saved on this phone.')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = (order['items'] as List? ?? []);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Receipt')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _Panel(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${order['order_id']}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 4),
+                  Text(_words('${order['status']}')),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          const _Section('Items'),
+          const SizedBox(height: 8),
+          for (final raw in items)
+            Builder(builder: (context) {
+              final item = Map<String, dynamic>.from(raw as Map);
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('${item['variant_id']}'),
+                subtitle: Text('Qty ${item['quantity']} · PKR ${_money(item['unit_price_minor'])}'),
+              );
+            }),
+          _MoneyRow('Subtotal', (order['subtotal_minor'] as num?)?.toInt() ?? 0),
+          _MoneyRow('Discount', (order['discount_minor'] as num?)?.toInt() ?? 0),
+          _MoneyRow('Total', (order['total_minor'] as num?)?.toInt() ?? 0, strong: true),
+          const SizedBox(height: 16),
+          FilledButton.icon(onPressed: () => _save(context), icon: const Icon(Icons.download), label: const Text('Download PDF')),
+          const SizedBox(height: 8),
+          OutlinedButton(onPressed: () => Navigator.pop(context), child: const Text('Back to store')),
+        ],
+      ),
     );
   }
 }
@@ -1085,29 +1635,142 @@ class _ClubPageState extends State<ClubPage> {
     if (mounted) setState(() => loading = false);
   }
 
-  Future<void> _transfer() async {
+  Future<void> _history(String playerId, String name) async {
+    try {
+      final data = await widget.api.send('GET', '/audit/v1/roster/history/$playerId');
+      final rows = (data['history'] as List? ?? []);
+      if (!mounted) return;
+      await showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        builder: (context) => ListView(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+          children: [
+            Text('$name history', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            if (rows.isEmpty) const Text('No moves recorded yet.'),
+            for (final raw in rows)
+              Builder(builder: (context) {
+                final row = Map<String, dynamic>.from(raw as Map);
+                final action = _words('${row['action'] ?? row['state'] ?? 'move'}');
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(action, style: const TextStyle(fontWeight: FontWeight.w700)),
+                  subtitle: Text('${row['from_squad_id'] ?? '—'} → ${row['to_squad_id'] ?? 'released'} · ${row['effective_date'] ?? row['when'] ?? ''}'),
+                );
+              }),
+          ],
+        ),
+      );
+    } on ApiException catch (caught) {
+      setState(() => message = caught.message);
+    }
+  }
+
+  Future<void> _manage(Map<String, dynamic> player) async {
+    final squads = <String>{};
+    for (final raw in (club?['roster'] as List? ?? [])) {
+      final id = '${(raw as Map)['squad_id'] ?? ''}';
+      if (id.isNotEmpty && id != 'null') squads.add(id);
+    }
+    final from = '${player['squad_id'] ?? ''}';
+    final other = squads.where((id) => id != from);
+    var kind = 'transfer';
+    var day = DateTime.now().toIso8601String().split('T').first;
+    var loanEnd = DateTime.now().add(const Duration(days: 30)).toIso8601String().split('T').first;
+    final destination = TextEditingController(text: other.isEmpty ? '' : other.first);
+    final reason = TextEditingController();
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => Padding(
+        padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + MediaQuery.viewInsetsOf(context).bottom),
+        child: SingleChildScrollView(
+        child: StatefulBuilder(
+          builder: (context, setSheet) => Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${player['name']}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: kind,
+                decoration: const InputDecoration(labelText: 'Action', border: OutlineInputBorder()),
+                items: const [
+                  DropdownMenuItem(value: 'transfer', child: Text('Transfer')),
+                  DropdownMenuItem(value: 'loan', child: Text('Loan')),
+                  DropdownMenuItem(value: 'release', child: Text('Release')),
+                ],
+                onChanged: (value) => setSheet(() => kind = value ?? 'transfer'),
+              ),
+              if (kind != 'release') ...[
+                const SizedBox(height: 12),
+                TextField(controller: destination, decoration: const InputDecoration(labelText: 'Destination squad', border: OutlineInputBorder())),
+              ],
+              const SizedBox(height: 12),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Effective date'),
+                subtitle: Text(day),
+                onTap: () async {
+                  final picked = await showDatePicker(context: context, initialDate: DateTime.tryParse(day) ?? DateTime.now(), firstDate: DateTime(2026), lastDate: DateTime(2027, 12, 31));
+                  if (picked != null) setSheet(() => day = picked.toIso8601String().split('T').first);
+                },
+              ),
+              if (kind == 'loan')
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Loan ends'),
+                  subtitle: Text(loanEnd),
+                  onTap: () async {
+                    final picked = await showDatePicker(context: context, initialDate: DateTime.tryParse(loanEnd) ?? DateTime.now(), firstDate: DateTime(2026), lastDate: DateTime(2027, 12, 31));
+                    if (picked != null) setSheet(() => loanEnd = picked.toIso8601String().split('T').first);
+                  },
+                ),
+              TextField(controller: reason, decoration: const InputDecoration(labelText: 'Reason', border: OutlineInputBorder())),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Review')),
+              ),
+            ],
+          ),
+        ),
+        ),
+      ),
+    );
+    final to = destination.text.trim();
+    final why = reason.text.trim();
+    destination.dispose();
+    reason.dispose();
+    if (saved != true || !mounted) return;
+    if (why.isEmpty) {
+      setState(() => message = 'Add a reason before you continue.');
+      return;
+    }
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Transfer Demo Back?'),
-        content: const Text('This moves the player to Alpha Reserves. If you are offline, it stays on this phone until sync.'),
+        title: Text('${_pretty(kind)} ${player['name']}?'),
+        content: Text(kind == 'release' ? 'This releases the player on $day.' : 'This $kind runs on $day. Offline changes stay on this phone until sync.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Transfer')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Confirm')),
         ],
       ),
     );
     if (confirm != true) return;
     final body = {
       'request_id': 'tr-${DateTime.now().millisecondsSinceEpoch}',
-      'league_id': 'demo-roster',
-      'player_id': 'demo-df',
-      'type': 'transfer',
-      'from_squad_id': 'squad-alpha-1',
-      'to_squad_id': 'squad-alpha-2',
-      'effective_date': '2026-10-17',
-      'loan_end_date': null,
-      'reason': 'Matchday rotation',
+      'league_id': '${player['league_id'] ?? 'demo-roster'}',
+      'player_id': player['player_id'],
+      'type': kind,
+      'from_squad_id': from,
+      'to_squad_id': kind == 'release' ? null : to,
+      'effective_date': day,
+      'loan_end_date': kind == 'loan' ? loanEnd : null,
+      'reason': why,
       'requested_by': 'manager',
     };
     final action = {
@@ -1117,18 +1780,19 @@ class _ClubPageState extends State<ClubPage> {
       'base_version': 0,
       'payload': body,
     };
+    final label = '${_pretty(kind)} ${player['name']}';
     if (widget.api.link == 'Offline') {
-      await widget.api.local.enqueue(action, 'Transfer Demo Back');
+      await widget.api.local.enqueue(action, label);
       await widget.onQueued();
-      setState(() => message = 'Transfer saved on this phone.');
+      setState(() => message = '$label saved on this phone.');
       return;
     }
     try {
       await widget.api.send('POST', '/api/v1/roster/transfer', body);
-      setState(() => message = 'Demo Back moved to Alpha Reserves.');
+      setState(() => message = '$label recorded.');
       await _load();
     } on ApiException catch (caught) {
-      await widget.api.local.enqueue(action, 'Transfer Demo Back');
+      await widget.api.local.enqueue(action, label);
       await widget.onQueued();
       setState(() => message = caught.message);
     }
@@ -1140,28 +1804,45 @@ class _ClubPageState extends State<ClubPage> {
     if (club == null) return Center(child: Text(message ?? 'Club could not be loaded.'));
     final staff = Map<String, dynamic>.from(club!['staff'] as Map? ?? {});
     final venue = Map<String, dynamic>.from(club!['venue'] as Map? ?? {});
+    final socials = club!['socials'] is Map ? Map<String, dynamic>.from(club!['socials'] as Map) : <String, dynamic>{};
     final roster = (club!['roster'] as List? ?? []);
     final manager = widget.api.role == 'club_manager' || widget.api.role == 'super_admin';
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Card(
+        _Panel(
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(club!['name'] as String, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+                Row(
+                  children: [
+                    _Crest('${club!['name']}', home: true, radius: 26),
+                    const SizedBox(width: 12),
+                    Expanded(child: Text(club!['name'] as String, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800))),
+                  ],
+                ),
                 const SizedBox(height: 6),
-                Text('${venue['name']}', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                Row(
+                  children: [
+                    Icon(Icons.stadium, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    const SizedBox(width: 6),
+                    Expanded(child: Text('${venue['name']}', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant))),
+                  ],
+                ),
+                if (socials.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(socials.entries.map((entry) => '${entry.key}: ${entry.value}').join(' · '), style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                ],
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    _StatusPill('Coach ${staff['coach']}'),
-                    _StatusPill('Manager ${staff['manager']}'),
-                    _StatusPill('Physio ${staff['physio']}'),
+                    _StaffChip('Coach', staff['coach']),
+                    _StaffChip('Manager', staff['manager']),
+                    _StaffChip('Physio', staff['physio']),
                   ],
                 ),
               ],
@@ -1172,46 +1853,30 @@ class _ClubPageState extends State<ClubPage> {
         const _Section('Roster'),
         const SizedBox(height: 8),
         if (roster.isEmpty) const Text('No players yet'),
-        for (final player in roster) ...[
-          Card(
-            child: ListTile(
-              leading: CircleAvatar(child: Text('${player['name']}'.isEmpty ? '?' : '${player['name']}'[0])),
-              title: Text('${player['name']}', style: const TextStyle(fontWeight: FontWeight.w700)),
-              subtitle: Text('${_words('${player['position']}')} · ${_words('${player['role'] ?? 'unassigned'}')}'),
-            ),
-          ),
+        for (final raw in roster) ...[
+          Builder(builder: (context) {
+            final player = Map<String, dynamic>.from(raw as Map);
+            final canMove = manager && '${player['squad_id'] ?? ''}'.isNotEmpty && player['squad_id'] != null;
+            return _Panel(
+              child: ListTile(
+                leading: _Crest('${player['name']}', home: true, radius: 18),
+                title: Text('${player['name']}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                subtitle: Text(_playerLine(player)),
+                trailing: canMove
+                    ? IconButton(onPressed: () => _manage(player), icon: const Icon(Icons.swap_horiz), tooltip: 'Transfer, loan, or release')
+                    : IconButton(onPressed: () => _history('${player['player_id']}', '${player['name']}'), icon: const Icon(Icons.history), tooltip: 'History'),
+                onTap: () => _history('${player['player_id']}', '${player['name']}'),
+              ),
+            );
+          }),
           const SizedBox(height: 8),
         ],
+        if (manager) const _Note(text: 'Tap the arrows to transfer, loan, or release a player. New players are registered by the league office.'),
         if (message != null) ...[const SizedBox(height: 4), _Note(text: message!)],
-        if (manager) ...[
-          const SizedBox(height: 8),
-          FilledButton(onPressed: _transfer, child: const Text('Transfer Demo Back')),
-          const SizedBox(height: 8),
-          OutlinedButton(onPressed: () => _loan(), child: const Text('Loan Demo Back')),
-        ],
       ],
     );
   }
 
-  Future<void> _loan() async {
-    try {
-      await widget.api.send('POST', '/api/v1/roster/transfer', {
-        'request_id': 'loan-${DateTime.now().millisecondsSinceEpoch}',
-        'league_id': 'demo-roster',
-        'player_id': 'demo-mf',
-        'type': 'loan',
-        'from_squad_id': 'squad-alpha-2',
-        'to_squad_id': 'squad-alpha-1',
-        'effective_date': '2026-10-17',
-        'loan_end_date': '2026-11-17',
-        'reason': 'Cover injury',
-        'requested_by': 'manager',
-      });
-      setState(() => message = 'Loan recorded until 17 Nov 2026.');
-    } on ApiException catch (caught) {
-      setState(() => message = caught.message);
-    }
-  }
 }
 
 Color _color(Object? value, [Color fallback = const Color(0xFF0B3D2E)]) {
@@ -1226,11 +1891,13 @@ IconData _linkIcon(String link) {
 }
 
 class MorePage extends StatelessWidget {
-  const MorePage({super.key, required this.api, required this.queue, required this.onSync, required this.onLogout});
+  const MorePage({super.key, required this.api, required this.queue, required this.reports, required this.onSync, required this.onLogout, required this.onChanged});
   final Api api;
   final List<Map<String, dynamic>> queue;
+  final List<String> reports;
   final VoidCallback onSync;
   final VoidCallback onLogout;
+  final VoidCallback onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1283,6 +1950,31 @@ class MorePage extends StatelessWidget {
                 Text(api.base, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
                 const SizedBox(height: 14),
                 SizedBox(width: double.infinity, child: FilledButton.icon(onPressed: onSync, icon: const Icon(Icons.sync), label: const Text('Sync now'))),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final controller = TextEditingController(text: api.base);
+                      final next = await showDialog<String>(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Server address'),
+                          content: TextField(controller: controller, decoration: const InputDecoration(labelText: 'Address')),
+                          actions: [
+                            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+                            FilledButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('Save')),
+                          ],
+                        ),
+                      );
+                      if (next == null || next.isEmpty) return;
+                      await api.saveBase(next);
+                      onChanged();
+                    },
+                    icon: const Icon(Icons.dns),
+                    label: const Text('Change server'),
+                  ),
+                ),
               ],
             ),
           ),
@@ -1303,8 +1995,18 @@ class MorePage extends StatelessWidget {
             ),
             const SizedBox(height: 8),
           ],
+        const SizedBox(height: 16),
+        _Section(reports.isEmpty ? 'No sync results yet' : 'Last sync'),
         const SizedBox(height: 8),
-        const _Note(text: 'Score a match from Fixtures. Transfer a player from Club.'),
+        if (reports.isEmpty)
+          const _Note(text: 'Applied and rejected items show here after Sync now.')
+        else
+          for (final line in reports.take(12)) ...[
+            Card(child: ListTile(leading: const Icon(Icons.fact_check), title: Text(line))),
+            const SizedBox(height: 8),
+          ],
+        const SizedBox(height: 8),
+        const _Note(text: 'Score a match from Home. Transfer a player from Club.'),
         const SizedBox(height: 16),
         SizedBox(
           width: double.infinity,
@@ -1371,12 +2073,6 @@ class _SyncChip extends StatelessWidget {
   }
 }
 
-IconData _standingIcon(String status) {
-  if (status == 'clinched') return Icons.verified;
-  if (status == 'eliminated') return Icons.cancel;
-  return Icons.hourglass_bottom;
-}
-
 class _LoadingList extends StatelessWidget {
   const _LoadingList();
 
@@ -1426,26 +2122,335 @@ class _Note extends StatelessWidget {
   }
 }
 
+class _FixtureCard extends StatelessWidget {
+  const _FixtureCard({
+    required this.status,
+    required this.when,
+    required this.home,
+    required this.away,
+    required this.homeScore,
+    required this.awayScore,
+    required this.onTap,
+  });
+
+  final String status;
+  final String when;
+  final String home;
+  final String away;
+  final String homeScore;
+  final String awayScore;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return _Panel(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  _StatusPill(status),
+                  const Spacer(),
+                  Icon(Icons.schedule, size: 14, color: scheme.onSurfaceVariant),
+                  const SizedBox(width: 4),
+                  Text(when, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12, fontWeight: FontWeight.w600)),
+                ],
+              ),
+              const SizedBox(height: 8),
+              _TeamScoreRow(name: home, score: homeScore, home: true),
+              Divider(height: 1, color: scheme.outlineVariant.withValues(alpha: 0.5)),
+              _TeamScoreRow(name: away, score: awayScore, home: false),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TeamScoreRow extends StatelessWidget {
+  const _TeamScoreRow({required this.name, required this.score, required this.home});
+  final String name;
+  final String score;
+  final bool home;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          _Crest(name, home: home),
+          const SizedBox(width: 10),
+          Expanded(child: Text(_pretty(name), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800))),
+          Text(score, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+        ],
+      ),
+    );
+  }
+}
+
+class _Scoreboard extends StatelessWidget {
+  const _Scoreboard({
+    required this.home,
+    required this.away,
+    required this.homeScore,
+    required this.awayScore,
+    required this.status,
+    required this.outcome,
+  });
+
+  final String home;
+  final String away;
+  final String homeScore;
+  final String awayScore;
+  final String status;
+  final String outcome;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return _Panel(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
+        child: Column(
+          children: [
+            _StatusPill(status),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(child: _Side(name: home, home: true)),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text('$homeScore  –  $awayScore', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w800, letterSpacing: -0.5)),
+                ),
+                Expanded(child: _Side(name: away, home: false)),
+              ],
+            ),
+            if (outcome.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(outcome, style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Side extends StatelessWidget {
+  const _Side({required this.name, required this.home});
+  final String name;
+  final bool home;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _Crest(name, home: home, radius: 22),
+        const SizedBox(height: 8),
+        Text(_pretty(name), textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w800)),
+      ],
+    );
+  }
+}
+
+class _TimelineTile extends StatelessWidget {
+  const _TimelineTile({required this.title, required this.detail, required this.corrected, required this.last});
+  final String title;
+  final String detail;
+  final bool corrected;
+  final bool last;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: 22,
+            child: Column(
+              children: [
+                Container(
+                  width: 12,
+                  height: 12,
+                  margin: const EdgeInsets.only(top: 16),
+                  decoration: BoxDecoration(color: corrected ? scheme.error : scheme.primary, shape: BoxShape.circle),
+                ),
+                if (!last) Expanded(child: Container(width: 2, color: scheme.outlineVariant)),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _Panel(
+                child: ListTile(
+                  title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+                  subtitle: detail.isEmpty ? null : Text(detail),
+                  trailing: corrected ? const _StatusPill('corrected') : null,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Panel extends StatelessWidget {
+  const _Panel({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: dark ? const Color(0xFF1B2420) : Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: dark ? 0.25 : 0.06), blurRadius: 16, offset: const Offset(0, 6)),
+        ],
+      ),
+      child: child,
+    );
+  }
+}
+
+class _Crest extends StatelessWidget {
+  const _Crest(this.name, {required this.home, this.radius = 16});
+  final String name;
+  final bool home;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: home ? scheme.primary : scheme.secondary,
+      child: Text(_mark(name), style: TextStyle(color: home ? Colors.white : scheme.onSecondary, fontSize: radius * 0.62, fontWeight: FontWeight.w800)),
+    );
+  }
+}
+
 class _StatusPill extends StatelessWidget {
   const _StatusPill(this.value);
   final String value;
 
   @override
   Widget build(BuildContext context) {
+    final live = value == 'in_progress';
+    final done = value == 'completed' || value == 'corrected';
+    final bg = live ? const Color(0xFF166534) : done ? const Color(0xFFE7E5E4) : const Color(0xFFFEF3C7);
+    final fg = live ? Colors.white : done ? const Color(0xFF44403C) : const Color(0xFF92400E);
+    final label = live ? 'Live' : _words(value);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(20),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(live ? Icons.circle : done ? Icons.flag : Icons.schedule, size: 10, color: fg),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(color: fg, fontSize: 12, fontWeight: FontWeight.w800)),
+        ],
       ),
-      child: Text(_words(value), style: TextStyle(color: Theme.of(context).colorScheme.primary, fontSize: 12, fontWeight: FontWeight.w700)),
     );
   }
 }
 
+class _Col extends StatelessWidget {
+  const _Col(this.text, this.width, {this.strong = false});
+  final String text;
+  final double width;
+  final bool strong;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: width,
+      child: Text(text, textAlign: TextAlign.end, style: TextStyle(fontSize: 13, fontWeight: strong ? FontWeight.w800 : FontWeight.w600)),
+    );
+  }
+}
+
+class _StaffChip extends StatelessWidget {
+  const _StaffChip(this.role, this.name);
+  final String role;
+  final Object? name;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final value = '${name ?? ''}'.trim();
+    final label = value.isEmpty || value.toLowerCase() == role.toLowerCase() ? role : '$role · $value';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(color: scheme.primary.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(20)),
+      child: Text(label, style: TextStyle(color: scheme.primary, fontSize: 12, fontWeight: FontWeight.w700)),
+    );
+  }
+}
+
+String _mark(String name) {
+  final parts = name.split(RegExp(r'[^A-Za-z0-9]+')).where((part) => part.isNotEmpty).toList();
+  if (parts.length >= 2 && parts.last.length <= 2) return parts.last.toUpperCase();
+  if (parts.length >= 2) return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
+  if (parts.isEmpty) return '?';
+  return parts.first[0].toUpperCase();
+}
+
+String _pretty(String value) {
+  final parts = value.split(RegExp(r'[-_\s]+')).where((part) => part.isNotEmpty).toList();
+  if (parts.isEmpty) return value;
+  return parts.map((part) => '${part[0].toUpperCase()}${part.substring(1)}').join(' ');
+}
+
+String _money(Object? minor) {
+  if (minor is! num) return '$minor';
+  final amount = minor / 100;
+  return amount == amount.roundToDouble() ? amount.toStringAsFixed(0) : amount.toStringAsFixed(2);
+}
+
+String _playerLine(dynamic player) {
+  final position = _words('${player['position']}');
+  final role = '${player['role'] ?? ''}'.trim();
+  if (role.isEmpty || role == 'null' || role == 'unassigned') return position;
+  return '$position · ${_words(role)}';
+}
+
 String _when(String? value) {
   if (value == null || value.isEmpty) return '';
-  return value.replaceFirst('T', ' ').replaceFirst('Z', '');
+  final text = value.replaceFirst('T', ' ').replaceFirst('Z', '');
+  return text.length >= 16 ? text.substring(0, 16) : text;
+}
+
+String _eventTitle(dynamic event) {
+  final type = '${event['type']}';
+  if (type == 'match_start') return 'Match started';
+  if (type == 'match_end') return 'Full time';
+  if (type == 'compensation') return 'Correction';
+  if (type == 'score') return _words('${event['payload']?['event_type'] ?? 'Score'}');
+  return _words(type);
+}
+
+String _eventDetail(dynamic event) {
+  final payload = event['payload'];
+  if (payload is! Map || payload.isEmpty) return '';
+  final bits = <String>[];
+  if (payload['team_id'] != null) bits.add('${payload['team_id']}');
+  if (payload['reason'] != null) bits.add('${payload['reason']}');
+  return bits.join(' · ');
 }
 
 String _words(String value) {

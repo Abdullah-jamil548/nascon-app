@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
@@ -63,5 +64,12 @@ class LocalStore {
   Future<void> clearDone() async {
     final database = await db;
     await database.delete('queue', where: 'result IS NOT NULL');
+  }
+
+  Future<String> savePdf(String name, String base64Pdf) async {
+    final folder = await getDatabasesPath();
+    final file = File(p.join(folder, '$name.pdf'));
+    await file.writeAsBytes(base64Decode(base64Pdf), flush: true);
+    return file.path;
   }
 }
