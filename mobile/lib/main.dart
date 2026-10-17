@@ -312,88 +312,152 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    const demos = [
+      ('Viewer', 'viewer@nascon.test'),
+      ('Player', 'player@nascon.test'),
+      ('Manager', 'manager@nascon.test'),
+      ('Organizer', 'organizer@nascon.test'),
+      ('Admin', 'admin@nascon.test'),
+    ];
     return Scaffold(
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
           children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(color: scheme.primary, borderRadius: BorderRadius.circular(16)),
-              child: const Icon(Icons.shield, color: Colors.white, size: 30),
-            ),
-            const SizedBox(height: 18),
-            const Text('NaSCon League', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -0.4)),
-            const SizedBox(height: 6),
-            Text('Fixtures, standings, roster and the club store.', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15)),
-            const SizedBox(height: 18),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final demo in const [
-                  ('Viewer', 'viewer@nascon.test'),
-                  ('Player', 'player@nascon.test'),
-                  ('Manager', 'manager@nascon.test'),
-                  ('Organizer', 'organizer@nascon.test'),
-                  ('Admin', 'admin@nascon.test'),
-                ])
-                  ActionChip(
-                    label: Text(demo.$1),
-                    onPressed: busy ? null : () => setState(() => email.text = demo.$2),
-                  ),
-              ],
-            ),
+            const SizedBox(height: 8),
+            const Center(child: _BrandMark()),
             const SizedBox(height: 16),
-            TextField(
-              controller: email,
-              decoration: const InputDecoration(labelText: 'Email'),
-              keyboardType: TextInputType.emailAddress,
-              textInputAction: TextInputAction.next,
-              autofillHints: const [AutofillHints.email],
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: password,
-              decoration: InputDecoration(
-                labelText: 'Password',
-                suffixIcon: IconButton(
-                  tooltip: hidePassword ? 'Show password' : 'Hide password',
-                  onPressed: () => setState(() => hidePassword = !hidePassword),
-                  icon: Icon(hidePassword ? Icons.visibility : Icons.visibility_off),
+            const Text('NaSCon League', textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.4)),
+            const SizedBox(height: 4),
+            Text('Matchday, table and the club store', textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant)),
+            const SizedBox(height: 22),
+            _Panel(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Demo account', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: scheme.onSurfaceVariant)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final demo in demos)
+                          FilterChip(
+                            label: Text(demo.$1),
+                            selected: email.text == demo.$2,
+                            onSelected: busy ? null : (_) => setState(() => email.text = demo.$2),
+                            showCheckmark: false,
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: email,
+                      decoration: const InputDecoration(labelText: 'Email', prefixIcon: Icon(Icons.mail_outline)),
+                      keyboardType: TextInputType.emailAddress,
+                      textInputAction: TextInputAction.next,
+                      autofillHints: const [AutofillHints.email],
+                      onChanged: (_) => setState(() {}),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: password,
+                      decoration: InputDecoration(
+                        labelText: 'Password',
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          tooltip: hidePassword ? 'Show password' : 'Hide password',
+                          onPressed: () => setState(() => hidePassword = !hidePassword),
+                          icon: Icon(hidePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                        ),
+                      ),
+                      obscureText: hidePassword,
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) => busy ? null : submit(),
+                      autofillHints: const [AutofillHints.password],
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: server,
+                      decoration: const InputDecoration(labelText: 'Server', prefixIcon: Icon(Icons.dns_outlined)),
+                    ),
+                    const SizedBox(height: 6),
+                    Text('USB phone: 127.0.0.1:8080', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12)),
+                    const SizedBox(height: 4),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: busy ? null : testConnection,
+                        icon: Icon(connection == 'Connected' ? Icons.check_circle : Icons.wifi_tethering, size: 18),
+                        label: Text(connection ?? 'Test connection'),
+                      ),
+                    ),
+                    if (error != null) ...[
+                      const SizedBox(height: 4),
+                      _Note(text: error!, error: true),
+                    ],
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: FilledButton(onPressed: busy ? null : submit, child: Text(busy ? 'Signing in…' : 'Sign in')),
+                    ),
+                  ],
                 ),
               ),
-              obscureText: hidePassword,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => busy ? null : submit(),
-              autofillHints: const [AutofillHints.password],
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: server,
-              decoration: const InputDecoration(labelText: 'Server', helperText: 'Emulator 10.0.2.2 · USB phone 127.0.0.1 · Hotspot uses the laptop address'),
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: busy ? null : testConnection,
-                icon: Icon(connection == 'Connected' ? Icons.check_circle : Icons.wifi_tethering, size: 18),
-                label: Text(connection ?? 'Test connection'),
-              ),
-            ),
-            if (error != null) ...[
-              const SizedBox(height: 12),
-              _Note(text: error!, error: true),
-            ],
-            const SizedBox(height: 20),
-            FilledButton(onPressed: busy ? null : submit, child: Text(busy ? 'Signing in…' : 'Sign in')),
           ],
         ),
       ),
     );
   }
+}
+
+class _BrandMark extends StatelessWidget {
+  const _BrandMark();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 96,
+      height: 96,
+      child: CustomPaint(painter: _LogoPainter(green: scheme.primary, gold: scheme.secondary)),
+    );
+  }
+}
+
+class _LogoPainter extends CustomPainter {
+  _LogoPainter({required this.green, required this.gold});
+  final Color green;
+  final Color gold;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.shortestSide / 2;
+    canvas.drawCircle(center, radius, Paint()..color = gold);
+    canvas.drawCircle(center, radius - 5, Paint()..color = green);
+    final shield = Path()
+      ..moveTo(center.dx, center.dy - radius * 0.46)
+      ..lineTo(center.dx + radius * 0.38, center.dy - radius * 0.22)
+      ..lineTo(center.dx + radius * 0.32, center.dy + radius * 0.16)
+      ..quadraticBezierTo(center.dx, center.dy + radius * 0.52, center.dx - radius * 0.32, center.dy + radius * 0.16)
+      ..lineTo(center.dx - radius * 0.38, center.dy - radius * 0.22)
+      ..close();
+    canvas.drawPath(shield, Paint()..color = Colors.white.withValues(alpha: 0.14));
+    canvas.drawPath(shield, Paint()..color = gold..style = PaintingStyle.stroke..strokeWidth = 1.4);
+    final letter = TextPainter(
+      text: const TextSpan(text: 'N', style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800, height: 1)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    letter.paint(canvas, center - Offset(letter.width / 2, letter.height / 2 + 1));
+  }
+
+  @override
+  bool shouldRepaint(covariant _LogoPainter oldDelegate) => oldDelegate.green != green || oldDelegate.gold != gold;
 }
 
 class HomePage extends StatefulWidget {
@@ -1899,140 +1963,185 @@ class MorePage extends StatelessWidget {
   final VoidCallback onLogout;
   final VoidCallback onChanged;
 
+  Future<void> _editServer(BuildContext context) async {
+    final controller = TextEditingController(text: api.base);
+    final next = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Server address'),
+        content: TextField(controller: controller, decoration: const InputDecoration(labelText: 'Address', border: OutlineInputBorder())),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('Save')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (next == null || next.isEmpty) return;
+    await api.saveBase(next);
+    onChanged();
+  }
+
+  Future<void> _signOut(BuildContext context) async {
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sign out?'),
+        content: Text(queue.isEmpty ? 'You can sign in again with a demo account.' : 'You still have ${queue.length} action(s) on this phone. They stay until this phone syncs.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Stay')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sign out')),
+        ],
+      ),
+    );
+    if (leave == true) {
+      await api.logout();
+      onLogout();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final role = api.role.replaceAll('_', ' ');
+    final role = _pretty(api.role.replaceAll('_', ' '));
     final initial = api.name.isEmpty ? 'N' : api.name[0].toUpperCase();
+    final quiet = queue.isEmpty && reports.isEmpty;
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
       children: [
         Container(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(color: scheme.primary, borderRadius: BorderRadius.circular(20)),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: scheme.primary,
+            borderRadius: BorderRadius.circular(22),
+          ),
           child: Row(
             children: [
-              CircleAvatar(
-                radius: 28,
-                backgroundColor: Colors.white,
-                child: Text(initial, style: TextStyle(color: scheme.primary, fontSize: 22, fontWeight: FontWeight.w800)),
+              Container(
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(color: scheme.secondary, shape: BoxShape.circle),
+                child: CircleAvatar(
+                  radius: 28,
+                  backgroundColor: Colors.white,
+                  child: Text(initial, style: TextStyle(color: scheme.primary, fontSize: 22, fontWeight: FontWeight.w800)),
+                ),
               ),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(api.name.isEmpty ? 'Signed in' : api.name, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
-                    const SizedBox(height: 2),
-                    Text(role.isEmpty ? 'Member' : role, style: const TextStyle(color: Colors.white70)),
-                    Text(api.tenantName.isEmpty ? 'NaSCon League' : api.tenantName, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                    Text(api.name.isEmpty ? 'Signed in' : api.name, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        _LightPill(role.isEmpty ? 'Member' : role),
+                        _LightPill(api.tenantName.isEmpty ? 'NaSCon League' : api.tenantName),
+                      ],
+                    ),
                   ],
                 ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+        const SizedBox(height: 14),
+        _Panel(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+                child: Row(
                   children: [
-                    Icon(_linkIcon(api.link), color: scheme.primary),
+                    Icon(_linkIcon(api.link), color: scheme.primary, size: 20),
                     const SizedBox(width: 8),
-                    Text(api.link, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                    Text(api.link, style: const TextStyle(fontWeight: FontWeight.w800)),
+                    const Spacer(),
+                    Flexible(child: Text(api.base, textAlign: TextAlign.end, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12))),
                   ],
                 ),
-                const SizedBox(height: 6),
-                Text(api.base, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
-                const SizedBox(height: 14),
-                SizedBox(width: double.infinity, child: FilledButton.icon(onPressed: onSync, icon: const Icon(Icons.sync), label: const Text('Sync now'))),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      final controller = TextEditingController(text: api.base);
-                      final next = await showDialog<String>(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          title: const Text('Server address'),
-                          content: TextField(controller: controller, decoration: const InputDecoration(labelText: 'Address')),
-                          actions: [
-                            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-                            FilledButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('Save')),
-                          ],
-                        ),
-                      );
-                      if (next == null || next.isEmpty) return;
-                      await api.saveBase(next);
-                      onChanged();
-                    },
-                    icon: const Icon(Icons.dns),
-                    label: const Text('Change server'),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: Icon(Icons.sync, color: scheme.primary),
+                title: const Text('Sync now', style: TextStyle(fontWeight: FontWeight.w700)),
+                subtitle: const Text('Send saved changes to the server'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: onSync,
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: Icon(Icons.dns_outlined, color: scheme.primary),
+                title: const Text('Server address', style: TextStyle(fontWeight: FontWeight.w700)),
+                subtitle: const Text('Used by this phone'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _editServer(context),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 22),
+        const _Section('Activity'),
+        const SizedBox(height: 8),
+        if (quiet)
+          _Panel(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
+              child: Column(
+                children: [
+                  Icon(Icons.verified_outlined, color: scheme.primary, size: 28),
+                  const SizedBox(height: 10),
+                  const Text('All caught up', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 4),
+                  Text('Offline scores and transfers show here after sync.', textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
+                ],
+              ),
+            ),
+          )
+        else
+          _Panel(
+            child: Column(
+              children: [
+                for (final row in queue)
+                  ListTile(
+                    leading: Icon(Icons.schedule, color: scheme.secondary),
+                    title: Text('${row['label']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: const Text('Waiting on this phone'),
                   ),
-                ),
+                for (final line in reports.take(12))
+                  ListTile(
+                    leading: Icon(Icons.fact_check_outlined, color: scheme.primary),
+                    title: Text(line, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  ),
               ],
             ),
           ),
-        ),
-        const SizedBox(height: 16),
-        _Section(queue.isEmpty ? 'Nothing waiting' : 'Waiting to sync'),
-        const SizedBox(height: 8),
-        if (queue.isEmpty)
-          const _Note(text: 'You are up to date. Offline changes will show up here.')
-        else
-          for (final row in queue) ...[
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.schedule),
-                title: Text('${row['label']}', style: const TextStyle(fontWeight: FontWeight.w700)),
-                subtitle: const Text('Saved on this phone'),
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-        const SizedBox(height: 16),
-        _Section(reports.isEmpty ? 'No sync results yet' : 'Last sync'),
-        const SizedBox(height: 8),
-        if (reports.isEmpty)
-          const _Note(text: 'Applied and rejected items show here after Sync now.')
-        else
-          for (final line in reports.take(12)) ...[
-            Card(child: ListTile(leading: const Icon(Icons.fact_check), title: Text(line))),
-            const SizedBox(height: 8),
-          ],
-        const SizedBox(height: 8),
-        const _Note(text: 'Score a match from Home. Transfer a player from Club.'),
-        const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: () async {
-              final leave = await showDialog<bool>(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('Sign out?'),
-                  content: Text(queue.isEmpty ? 'You can sign in again with a demo account.' : 'You still have ${queue.length} action(s) on this phone. They stay until this phone syncs.'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Stay')),
-                    FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sign out')),
-                  ],
-                ),
-              );
-              if (leave == true) {
-                await api.logout();
-                onLogout();
-              }
-            },
+        const SizedBox(height: 18),
+        Center(
+          child: TextButton.icon(
+            onPressed: () => _signOut(context),
+            style: TextButton.styleFrom(foregroundColor: scheme.error),
             icon: const Icon(Icons.logout),
             label: const Text('Sign out'),
           ),
         ),
       ],
+    );
+  }
+}
+
+class _LightPill extends StatelessWidget {
+  const _LightPill(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(20)),
+      child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700)),
     );
   }
 }
