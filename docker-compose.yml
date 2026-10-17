@@ -1,0 +1,51 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nascon
+      POSTGRES_PASSWORD: nascon
+      POSTGRES_DB: nascon
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nascon -d nascon"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+  minio:
+    image: ricardbejarano/minio:RELEASE.2024-09-22T00-33-43Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: nascon
+      MINIO_ROOT_PASSWORD: nasconnascon
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql+psycopg://nascon:nascon@db:5432/nascon
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: nascon
+      MINIO_SECRET_KEY: nasconnascon
+      DAY1_SALT: ${DAY1_SALT}
+      JWT_SECRET: nascon-jwt-dev
+    depends_on:
+      db:
+        condition: service_healthy
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://nascon:nascon@db:5432/nascon
+      REDIS_URL: redis://redis:6379/0
+      DAY1_SALT: ${DAY1_SALT}
+    depends_on:
+      - redis
+      - api

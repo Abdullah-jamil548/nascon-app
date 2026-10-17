@@ -1,0 +1,27 @@
+.env
+.pytest.db
+nascon.db
+__pycache__/
+.pytest_cache/
+*.pyc
+coverage-raw.json
+.dart_tool/
+build/
+mobile/build/
+.idea/
+*.iml
+
+# Local Flutter template at the repository root. The graded app is mobile/.
+/android/
+/ios/
+/linux/
+/macos/
+/windows/
+/web/
+/lib/
+/test/
+/pubspec.yaml
+/pubspec.lock
+.metadata
+analysis_options.yaml
+nasconapp.iml
