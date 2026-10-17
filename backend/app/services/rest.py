@@ -390,13 +390,16 @@ def _store_pdf(order_id: str, pdf_base64: str) -> None:
     if not endpoint:
         return
     try:
+        import urllib3
         from minio import Minio
 
+        http = urllib3.PoolManager(timeout=urllib3.Timeout(connect=1.0, read=2.0))
         client = Minio(
             endpoint,
             access_key=__import__("os").environ.get("MINIO_ACCESS_KEY", "nascon"),
             secret_key=__import__("os").environ.get("MINIO_SECRET_KEY", "nasconnascon"),
             secure=False,
+            http_client=http,
         )
         if not client.bucket_exists("receipts"):
             client.make_bucket("receipts")

@@ -4,6 +4,7 @@ nascon.db
 __pycache__/
 .pytest_cache/
 *.pyc
+.coverage
 coverage-raw.json
 .dart_tool/
 build/

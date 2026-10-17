@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
@@ -53,14 +54,17 @@ ThemeData _theme(Color primary, Color secondary) {
 class Api {
   final storage = const FlutterSecureStorage();
   final local = LocalStore();
-  String base = 'http://10.0.2.2:8080';
+  static const _definedBase = String.fromEnvironment('API_BASE');
+  String base = _definedBase.isNotEmpty
+      ? _definedBase
+      : (!kIsWeb && defaultTargetPlatform == TargetPlatform.android ? 'http://10.0.2.2:8080' : 'http://127.0.0.1:8080');
   String? token;
   String role = '';
   String link = 'Online';
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
-    base = prefs.getString('base') ?? base;
+    base = _definedBase.isNotEmpty ? _definedBase : (prefs.getString('base') ?? base);
     token = await storage.read(key: 'token');
     role = await storage.read(key: 'role') ?? '';
   }

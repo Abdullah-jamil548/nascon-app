@@ -13,8 +13,7 @@ services:
   redis:
     image: redis:7-alpine
   minio:
-    image: ricardbejarano/minio:RELEASE.2024-09-22T00-33-43Z
-    command: server /data --console-address ":9001"
+    image: bitnamilegacy/minio:2024.6.13
     environment:
       MINIO_ROOT_USER: nascon
       MINIO_ROOT_PASSWORD: nasconnascon

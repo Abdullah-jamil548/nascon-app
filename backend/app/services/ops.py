@@ -71,7 +71,9 @@ def emit(db: Session, name: str, payload: dict) -> None:
     try:
         import redis
 
-        redis.Redis.from_url(url).xadd("domain-events", {"name": name, "payload": canonical(payload)}, maxlen=1000)
+        redis.Redis.from_url(url, socket_connect_timeout=1, socket_timeout=1).xadd(
+            "domain-events", {"name": name, "payload": canonical(payload)}, maxlen=1000
+        )
     except Exception:
         return
 

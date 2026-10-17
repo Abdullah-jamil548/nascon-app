@@ -10,7 +10,7 @@ DAY1_SALT=<your-salt> docker compose up -d --build
 
 The API listens on http://localhost:8080. `GET /health` returns `{"status":"ok"}` after Postgres is seeded.
 
-Object storage uses `ricardbejarano/minio:RELEASE.2024-09-22T00-33-43Z`. That tag is the MinIO `RELEASE.2024-09-22T00-33-43Z` binary. Docker Hub removed `minio/minio` in September 2026, so a fresh pull of the old name fails.
+Object storage uses `bitnamilegacy/minio:2024.6.13`. Docker Hub removed `minio/minio` in September 2026, so that name cannot be pulled on a fresh machine.
 
 ## Demo accounts
 
