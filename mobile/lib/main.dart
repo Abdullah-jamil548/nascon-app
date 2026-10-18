@@ -257,39 +257,7 @@ class _RootPageState extends State<RootPage> {
   Widget build(BuildContext context) {
     if (!ready) return const Scaffold(body: Center(child: CircularProgressIndicator()));
     if (guestLink != null) {
-      final costream = guestLink!.contains('cs-session');
-      return Scaffold(
-        backgroundColor: const Color(0xFF101412),
-        body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(costream ? 'Co-Stream' : 'Live match', style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800)),
-                const SizedBox(height: 16),
-                Container(
-                  height: 180,
-                  width: double.infinity,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(color: const Color(0xFF17211C), borderRadius: BorderRadius.circular(16)),
-                  child: const Text('LIVE', style: TextStyle(color: Color(0xFFF5C518), fontWeight: FontWeight.w800, letterSpacing: 1.4)),
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 18),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(color: const Color(0xFF0B3D2E), borderRadius: BorderRadius.circular(16)),
-                  child: Text(costream ? 'Grid' : '1 - 0', style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w800)),
-                ),
-                const SizedBox(height: 12),
-                Text(guestLink!, key: const Key('deep-link-target'), style: const TextStyle(color: Color(0xFFB7C4BC))),
-              ],
-            ),
-          ),
-        ),
-      );
+      return GuestLivePage(api: widget.api, link: guestLink!);
     }
     if (!signedIn) {
       return LoginPage(
@@ -303,6 +271,118 @@ class _RootPageState extends State<RootPage> {
     return HomePage(
       api: widget.api,
       onLogout: () => setState(() => signedIn = false),
+    );
+  }
+}
+
+class GuestLivePage extends StatefulWidget {
+  const GuestLivePage({super.key, required this.api, required this.link});
+  final Api api;
+  final String link;
+
+  @override
+  State<GuestLivePage> createState() => _GuestLivePageState();
+}
+
+class _GuestLivePageState extends State<GuestLivePage> {
+  Timer? _timer;
+  String score = '1 - 0';
+  String subtitle = '';
+
+  bool get costream => widget.link.contains('cs-session');
+
+  String get matchId {
+    final uri = Uri.tryParse(widget.link);
+    final parts = (uri?.pathSegments.isNotEmpty == true)
+        ? uri!.pathSegments
+        : widget.link.split('/').where((p) => p.isNotEmpty).toList();
+    if (parts.isEmpty) return 'match-m1';
+    return parts.last;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    if (costream) {
+      score = 'Grid';
+      subtitle = 'session $matchId';
+      _loadCostream();
+    } else {
+      _refreshScore();
+      _timer = Timer.periodic(const Duration(milliseconds: 400), (_) => _refreshScore());
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refreshScore() async {
+    try {
+      final data = await widget.api.send('GET', '/audit/v1/score/$matchId');
+      final home = data['home'] is Map ? (data['home'] as Map)['score'] : null;
+      final away = data['away'] is Map ? (data['away'] as Map)['score'] : null;
+      if (!mounted) return;
+      setState(() => score = '${home ?? 0} - ${away ?? 0}');
+    } catch (_) {}
+  }
+
+  Future<void> _loadCostream() async {
+    try {
+      final data = await widget.api.send('POST', '/audit/v1/costream/session', {
+        'session_id': matchId,
+        'host_player_id': 'player-alpha-1',
+        'participants': ['player-alpha-1', 'player-alpha-2'],
+        'layout': 'grid_2',
+        'simulate_host_drop': false,
+      });
+      if (!mounted) return;
+      setState(() {
+        score = '${data['layout'] ?? 'grid_2'}';
+        subtitle = '${data['participant_count'] ?? 0} players · ${data['status'] ?? 'active'}';
+      });
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF101412),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(costream ? 'Co-Stream' : 'Live match', style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800)),
+              if (subtitle.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(subtitle, style: const TextStyle(color: Color(0xFFB7C4BC))),
+              ],
+              const SizedBox(height: 16),
+              Container(
+                height: 180,
+                width: double.infinity,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(color: const Color(0xFF17211C), borderRadius: BorderRadius.circular(16)),
+                child: const Text('LIVE', style: TextStyle(color: Color(0xFFF5C518), fontWeight: FontWeight.w800, letterSpacing: 1.4)),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 18),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(color: const Color(0xFF0B3D2E), borderRadius: BorderRadius.circular(16)),
+                child: Text(score, style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w800)),
+              ),
+              const SizedBox(height: 12),
+              Text(widget.link, key: const Key('deep-link-target'), style: const TextStyle(color: Color(0xFFB7C4BC))),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1977,7 +2057,13 @@ class _ClubPageState extends State<ClubPage> {
                 trailing: canMove
                     ? IconButton(onPressed: () => _manage(player), icon: const Icon(Icons.swap_horiz), tooltip: 'Transfer, loan, or release')
                     : IconButton(onPressed: () => _history('${player['player_id']}', '${player['name']}'), icon: const Icon(Icons.history), tooltip: 'History'),
-                onTap: () => _history('${player['player_id']}', '${player['name']}'),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => AthletePage(api: widget.api, playerId: '${player['player_id']}', fallbackName: '${player['name']}'),
+                    ),
+                  );
+                },
               ),
             );
           }),
@@ -1989,6 +2075,133 @@ class _ClubPageState extends State<ClubPage> {
     );
   }
 
+}
+
+class AthletePage extends StatefulWidget {
+  const AthletePage({super.key, required this.api, required this.playerId, required this.fallbackName});
+  final Api api;
+  final String playerId;
+  final String fallbackName;
+
+  @override
+  State<AthletePage> createState() => _AthletePageState();
+}
+
+class _AthletePageState extends State<AthletePage> {
+  Map<String, dynamic>? profile;
+  String? message;
+  bool loading = true;
+  bool busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      profile = await widget.api.send('GET', '/audit/v1/athletes/${widget.playerId}');
+      message = null;
+    } on ApiException catch (caught) {
+      message = caught.message;
+    }
+    if (mounted) setState(() => loading = false);
+  }
+
+  Future<void> _follow(String action) async {
+    setState(() => busy = true);
+    try {
+      final result = await widget.api.send('POST', '/audit/v1/follow', {
+        'follower_id': 'player-alpha-2',
+        'athlete_id': widget.playerId,
+        'action': action,
+      });
+      setState(() {
+        profile = {
+          ...?profile,
+          'follower_count': result['follower_count'] ?? profile?['follower_count'],
+        };
+        message = action == 'follow' ? 'Following.' : 'Unfollowed.';
+      });
+    } on ApiException catch (caught) {
+      setState(() => message = caught.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final name = '${profile?['name'] ?? widget.fallbackName}';
+    final matches = profile?['matches'] is List ? profile!['matches'] as List : const [];
+    final vod = profile?['vod'] is List ? profile!['vod'] as List : const [];
+    return Scaffold(
+      appBar: AppBar(title: Text(name)),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                _Panel(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(name, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+                        const SizedBox(height: 6),
+                        Text('${profile?['club_id'] ?? 'Club'} · ${profile?['follower_count'] ?? 0} followers', style: TextStyle(color: scheme.onSurfaceVariant)),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton(
+                                onPressed: busy ? null : () => _follow('follow'),
+                                child: const Text('Follow'),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: busy ? null : () => _follow('unfollow'),
+                                child: const Text('Unfollow'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const _Section('Matches'),
+                const SizedBox(height: 8),
+                if (matches.isEmpty) const Text('No matches listed yet.'),
+                for (final raw in matches)
+                  _Panel(
+                    child: ListTile(
+                      title: Text('${raw is Map ? (raw['match_id'] ?? raw) : raw}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                      subtitle: Text(raw is Map ? '${raw['status'] ?? ''}' : ''),
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                const _Section('VOD'),
+                const SizedBox(height: 8),
+                if (vod.isEmpty) const Text('No recordings yet.'),
+                for (final raw in vod)
+                  _Panel(
+                    child: ListTile(
+                      leading: Icon(Icons.play_circle_outline, color: scheme.primary),
+                      title: Text('${raw is Map ? (raw['match_id'] ?? raw) : raw}'),
+                    ),
+                  ),
+                if (message != null) ...[const SizedBox(height: 12), _Note(text: message!)],
+              ],
+            ),
+    );
+  }
 }
 
 Color _color(Object? value, [Color fallback = const Color(0xFF0B3D2E)]) {
@@ -2028,6 +2241,70 @@ class MorePage extends StatelessWidget {
     if (next == null || next.isEmpty) return;
     await api.saveBase(next);
     onChanged();
+  }
+
+  Future<void> _goLive(BuildContext context) async {
+    var note = 'Generate a key, paste the RTMP URL into OBS, then open the playback URL.';
+    var keyText = '';
+    var rtmp = '';
+    var playback = '';
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          Future<void> run(String action) async {
+            try {
+              final body = await api.send('POST', '/audit/v1/stream/key', {
+                'action': action,
+                'player_id': 'player-alpha-1',
+                'label': 'phone-go-live',
+              });
+              setSheet(() {
+                keyText = '${body['stream_key'] ?? ''}';
+                final endpoints = body['ingest_endpoints'];
+                rtmp = endpoints is Map ? '${endpoints['rtmp'] ?? ''}' : '';
+                playback = '${body['playback_url'] ?? ''}';
+                note = action == 'revoke' ? 'Stream key revoked.' : 'Stream key ready for OBS.';
+              });
+            } on ApiException catch (caught) {
+              setSheet(() => note = caught.message);
+            }
+          }
+
+          return Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + MediaQuery.viewInsetsOf(context).bottom),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Go Live', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 8),
+                  Text(note),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      FilledButton(onPressed: () => run('generate'), child: const Text('Generate')),
+                      OutlinedButton(onPressed: () => run('rotate'), child: const Text('Rotate')),
+                      OutlinedButton(onPressed: () => run('revoke'), child: const Text('Revoke')),
+                    ],
+                  ),
+                  if (keyText.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    SelectableText('Key: $keyText'),
+                    if (rtmp.isNotEmpty) SelectableText('RTMP: $rtmp'),
+                    if (playback.isNotEmpty) SelectableText('Play: $playback'),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   Future<void> _signOut(BuildContext context) async {
@@ -2118,6 +2395,14 @@ class MorePage extends StatelessWidget {
                 subtitle: const Text('Send saved changes to the server'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: onSync,
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: Icon(Icons.videocam_outlined, color: scheme.primary),
+                title: const Text('Go Live', style: TextStyle(fontWeight: FontWeight.w700)),
+                subtitle: const Text('Generate or revoke a stream key for OBS'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _goLive(context),
               ),
               const Divider(height: 1),
               ListTile(

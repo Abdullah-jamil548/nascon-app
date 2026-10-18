@@ -868,7 +868,13 @@ button:active {{ transform:translateY(1px); }}
     <div class="modal-card">
       <strong>Sign in to continue</strong>
       <p>Sign in to send chat. Your cart stays.</p>
-      <button id="modal-close" type="button">Got it</button>
+      <label style="display:block;margin:10px 0 6px;color:var(--muted);font-size:13px">Email</label>
+      <input id="auth-email" value="viewer@nascon.test" autocomplete="username" style="width:100%;min-height:48px;margin-bottom:8px;border-radius:12px;border:1px solid var(--line);background:rgba(0,0,0,.28);color:var(--ink);padding:12px 14px">
+      <label style="display:block;margin:10px 0 6px;color:var(--muted);font-size:13px">Password</label>
+      <input id="auth-password" type="password" value="Nascon@26" autocomplete="current-password" style="width:100%;min-height:48px;margin-bottom:12px;border-radius:12px;border:1px solid var(--line);background:rgba(0,0,0,.28);color:var(--ink);padding:12px 14px">
+      <p id="auth-status" style="min-height:20px;color:var(--live);font-size:13px;margin:0 0 10px"></p>
+      <button id="auth-login" type="button" style="width:100%;margin-bottom:8px">Sign in &amp; keep cart</button>
+      <button id="modal-close" type="button" style="width:100%;background:#24352e">Got it</button>
     </div>
   </div>
 </main>
@@ -878,15 +884,93 @@ const count = document.getElementById('count');
 const modal = document.getElementById('modal');
 const video = document.getElementById('player');
 const wait = document.getElementById('stream-wait');
+const authStatus = document.getElementById('auth-status');
 const streamUrl = 'http://localhost:8888/live/{match_id}/index.m3u8';
+let authToken = null;
+const chatList = document.getElementById('chat');
+const field = document.getElementById('field');
+function addChatLine(sender, text, flagged) {{
+  const row = document.createElement('div');
+  row.style.cssText = 'margin:0 0 8px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.04);';
+  row.innerHTML = '<strong style="color:#9aafa4">' + sender + '</strong> · ' +
+    '<span style="' + (flagged ? 'color:#f5c518;font-weight:700' : '') + '">' + text + '</span>';
+  chatList.appendChild(row);
+  chatList.scrollTop = chatList.scrollHeight;
+}}
 document.getElementById('add').onclick = () => {{
   count.textContent = String(Number(count.textContent) + 1);
 }};
-document.getElementById('send').onclick = () => {{
-  modal.hidden = false;
+document.getElementById('send').onclick = async () => {{
+  if (!authToken) {{
+    modal.hidden = false;
+    return;
+  }}
+  const text = (field.value || '').trim();
+  if (!text) return;
+  try {{
+    const res = await fetch('/audit/v1/moderation/test', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json', Authorization: 'Bearer ' + authToken }},
+      body: JSON.stringify({{
+        chat_room_id: 'chat-{match_id}',
+        incoming_messages: [{{ message_id: 'ui-' + Date.now(), sender: 'viewer', text: text }}],
+        check_dlq: true,
+        simulate_failed_notifications: 0,
+      }}),
+    }});
+    const body = await res.json();
+    if (!res.ok) throw new Error((body.error && body.error.message) || 'Moderation failed');
+    const rows = body.filtered_messages || [];
+    if (!rows.length) {{
+      addChatLine('system', '(message dropped — flood / spam)', true);
+    }} else {{
+      rows.forEach((row) => addChatLine(row.sender || 'viewer', row.text || '', !!row.flagged));
+    }}
+    if ((body.kicked_users || []).length) {{
+      addChatLine('system', 'kicked: ' + body.kicked_users.join(', '), true);
+    }}
+    field.value = '';
+  }} catch (err) {{
+    addChatLine('system', err.message || 'Chat failed', true);
+  }}
 }};
 document.getElementById('modal-close').onclick = () => {{
   modal.hidden = true;
+}};
+document.getElementById('auth-login').onclick = async () => {{
+  authStatus.textContent = 'Signing in…';
+  try {{
+    const loginRes = await fetch('/api/v1/auth/login', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{
+        email: document.getElementById('auth-email').value,
+        password: document.getElementById('auth-password').value,
+      }}),
+    }});
+    const loginBody = await loginRes.json();
+    if (!loginRes.ok) throw new Error((loginBody.error && loginBody.error.message) || 'Login failed');
+    authToken = loginBody.token;
+    const qty = Math.max(1, Number(count.textContent) || 1);
+    const guestToken = 'guest_web_' + Date.now();
+    const mergeRes = await fetch('/audit/v1/guest/cart-merge', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json', Authorization: 'Bearer ' + authToken }},
+      body: JSON.stringify({{
+        guest_token: guestToken,
+        registered_user_id: 'player-alpha-1',
+        guest_cart: [{{ variant_id: 'var-jersey-001-L', quantity: qty }}],
+        test_write_block: true,
+      }}),
+    }});
+    const mergeBody = await mergeRes.json();
+    if (!mergeRes.ok) throw new Error((mergeBody.error && mergeBody.error.message) || 'Cart merge failed');
+    count.textContent = String(mergeBody.active_cart.total_items);
+    authStatus.textContent = 'Signed in. Cart merged. Chat unlocked — try b@d_w0rd';
+    modal.hidden = true;
+  }} catch (err) {{
+    authStatus.textContent = err.message || 'Could not sign in';
+  }}
 }};
 let hls = null;
 function markPlaying() {{ wait.dataset.state = 'playing'; }}
