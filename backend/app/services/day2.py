@@ -722,39 +722,201 @@ def erase(db: Session, user_id: str) -> dict:
 
 def guest_page(score: str, match_id: str = "match-m1") -> str:
     return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NaSCon Live</title>
 <style>
-body{{margin:0;font-family:Arial,sans-serif;background:#101412;color:#f4f7f5}}
-main{{padding:16px;max-width:480px;margin:0 auto}}
-button,video,input{{min-width:48px;min-height:48px}}
-button{{background:#0B3D2E;color:#fff;border:0;border-radius:12px;font-weight:700;padding:12px 16px}}
-#live-score-banner,#pinned-merch-card{{background:#17211c;border-radius:12px;padding:12px;margin:12px 0}}
-[hidden]{{display:none}}
-</style></head>
-<body><main>
-<div style="position:relative">
-<video data-testid="guest-video-player" aria-label="Live match stream" controls src="http://localhost:8888/live/{match_id}/index.m3u8"></video>
-<div id="live-score-banner" data-testid="live-score-banner" role="status" style="position:absolute;top:8px;left:8px">{score}</div>
-</div>
-<div data-testid="pinned-merch-card">prod-jersey-001 var-jersey-001-L</div>
-<button id="add" data-testid="add-to-guest-cart-btn" type="button">Add to cart</button>
-<span id="count" data-testid="guest-cart-count">0</span>
-<div id="chat" data-testid="chat-message-list" aria-live="polite"></div>
-<input id="field" data-testid="chat-input-field" aria-label="Chat message">
-<button id="send" data-testid="chat-send-btn" type="button">Send</button>
-<div id="modal" data-testid="progressive-auth-modal" hidden role="dialog" aria-label="Sign in to continue">Sign in to send chat. Your cart stays.</div>
-<script>
-const count=document.getElementById('count');
-document.getElementById('add').onclick=()=>{{count.textContent=String(Number(count.textContent)+1);}};
-document.getElementById('send').onclick=()=>{{document.getElementById('modal').hidden=false;}};
-async function refresh(){{
-  try{{
-    const res=await fetch('/audit/v1/score/{match_id}');
-    const body=await res.json();
-    document.getElementById('live-score-banner').textContent=(body.home&&body.home.score)+' - '+(body.away&&body.away.score);
-  }}catch(e){{}}
+:root {{
+  --bg:#0c100e; --panel:#15201b; --panel-2:#1b2a24; --ink:#f2f6f3; --muted:#9aafa4;
+  --brand:#0b3d2e; --brand-2:#126b4f; --live:#f5c518; --line:rgba(255,255,255,.08);
 }}
-setInterval(refresh,200);
+* {{ box-sizing:border-box; }}
+body {{
+  margin:0; min-height:100vh; color:var(--ink);
+  font-family:"Segoe UI",system-ui,sans-serif;
+  background:
+    radial-gradient(900px 420px at 10% -10%, rgba(18,107,79,.35), transparent 60%),
+    radial-gradient(700px 360px at 100% 0%, rgba(245,197,24,.12), transparent 55%),
+    linear-gradient(180deg, #101814 0%, var(--bg) 45%, #0a0e0c 100%);
+}}
+main {{ max-width:720px; margin:0 auto; padding:20px 16px 40px; }}
+.brand {{
+  display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:18px;
+}}
+.brand h1 {{
+  margin:0; font-size:clamp(28px, 5vw, 40px); font-weight:800; letter-spacing:-.03em; line-height:1;
+}}
+.brand p {{ margin:6px 0 0; color:var(--muted); font-size:14px; }}
+.pill {{
+  display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px;
+  background:rgba(245,197,24,.12); color:var(--live); font-size:12px; font-weight:800; letter-spacing:.08em;
+}}
+.pill::before {{ content:""; width:8px; height:8px; border-radius:50%; background:var(--live); box-shadow:0 0 0 4px rgba(245,197,24,.18); }}
+.stage {{
+  position:relative; overflow:hidden; border-radius:18px; background:#000;
+  border:1px solid var(--line); box-shadow:0 18px 48px rgba(0,0,0,.35);
+}}
+video {{
+  display:block; width:100%; aspect-ratio:16/9; min-width:48px; min-height:48px; background:#000; object-fit:cover;
+}}
+.stream-wait {{
+  position:absolute; inset:0; z-index:1; display:grid; place-items:center; text-align:center;
+  background:
+    linear-gradient(180deg, rgba(12,20,16,.2), rgba(12,20,16,.75)),
+    repeating-linear-gradient(-12deg, rgba(255,255,255,.03) 0 12px, transparent 12px 24px);
+  pointer-events:none;
+}}
+.stream-wait[data-state="playing"] {{ opacity:0; }}
+.stream-wait strong {{ display:block; font-size:22px; margin-bottom:6px; }}
+.stream-wait span {{ color:var(--muted); font-size:14px; }}
+#live-score-banner {{
+  position:absolute; top:12px; left:12px; z-index:2; margin:0;
+  min-width:88px; min-height:48px; padding:10px 14px; border-radius:12px;
+  background:rgba(11,61,46,.92); color:#fff; font-size:22px; font-weight:800; letter-spacing:.04em;
+  display:flex; align-items:center; justify-content:center; backdrop-filter:blur(6px);
+}}
+.grid {{ display:grid; gap:14px; margin-top:16px; }}
+@media (min-width:640px) {{ .grid {{ grid-template-columns:1.1fr .9fr; align-items:start; }} }}
+.panel {{
+  background:linear-gradient(180deg, var(--panel-2), var(--panel));
+  border:1px solid var(--line); border-radius:16px; padding:16px;
+}}
+.panel h2 {{ margin:0 0 10px; font-size:15px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); }}
+[data-testid="pinned-merch-card"] {{
+  margin:0 0 12px; padding:14px; border-radius:12px; background:rgba(0,0,0,.22);
+  border:1px solid var(--line); font-weight:700;
+}}
+.merch-row, .chat-row {{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
+button, input {{
+  min-width:48px; min-height:48px; border-radius:12px; font:inherit;
+}}
+button {{
+  border:0; background:linear-gradient(180deg, var(--brand-2), var(--brand));
+  color:#fff; font-weight:800; padding:12px 16px; cursor:pointer;
+}}
+button:active {{ transform:translateY(1px); }}
+#count {{
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:48px; min-height:48px; padding:0 14px; border-radius:12px;
+  background:rgba(245,197,24,.14); color:var(--live); font-weight:800; font-size:18px;
+}}
+#chat {{
+  min-height:120px; margin-bottom:12px; padding:12px; border-radius:12px;
+  background:rgba(0,0,0,.25); border:1px solid var(--line); color:var(--muted);
+}}
+#field {{
+  flex:1; min-width:180px; border:1px solid var(--line); background:rgba(0,0,0,.28);
+  color:var(--ink); padding:12px 14px; outline:none;
+}}
+#field:focus {{ border-color:rgba(18,107,79,.7); }}
+#modal {{
+  position:fixed; inset:0; z-index:20; display:grid; place-items:center;
+  background:rgba(0,0,0,.62); padding:20px;
+}}
+#modal[hidden] {{ display:none !important; }}
+.modal-card {{
+  width:min(420px, 100%); background:var(--panel-2); border:1px solid var(--line);
+  border-radius:18px; padding:22px; box-shadow:0 24px 60px rgba(0,0,0,.45);
+}}
+.modal-card strong {{ display:block; font-size:20px; margin-bottom:8px; }}
+.modal-card p {{ margin:0 0 16px; color:var(--muted); line-height:1.45; }}
+.modal-card button {{ width:100%; }}
+</style>
+</head>
+<body>
+<main>
+  <header class="brand">
+    <div>
+      <h1>NaSCon</h1>
+      <p>Guest live · match {match_id}</p>
+    </div>
+    <span class="pill">LIVE</span>
+  </header>
+
+  <section class="stage" aria-label="Match stream">
+    <video id="player" data-testid="guest-video-player" aria-label="Live match stream" controls playsinline></video>
+    <div class="stream-wait" id="stream-wait" data-state="waiting">
+      <div>
+        <strong>Waiting for live ingest</strong>
+        <span>Score, cart, and chat still work · stream starts when a publisher connects</span>
+      </div>
+    </div>
+    <div id="live-score-banner" data-testid="live-score-banner" role="status">{score}</div>
+  </section>
+
+  <div class="grid">
+    <section class="panel" aria-label="Pinned merchandise">
+      <h2>Pinned merch</h2>
+      <div data-testid="pinned-merch-card">prod-jersey-001 · var-jersey-001-L</div>
+      <div class="merch-row">
+        <button id="add" data-testid="add-to-guest-cart-btn" type="button">Add to cart</button>
+        <span id="count" data-testid="guest-cart-count" aria-label="Cart count">0</span>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Guest chat">
+      <h2>Chat</h2>
+      <div id="chat" data-testid="chat-message-list" aria-live="polite"></div>
+      <div class="chat-row">
+        <input id="field" data-testid="chat-input-field" aria-label="Chat message" placeholder="Say something…">
+        <button id="send" data-testid="chat-send-btn" type="button">Send</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="modal" data-testid="progressive-auth-modal" hidden role="dialog" aria-label="Sign in to continue">
+    <div class="modal-card">
+      <strong>Sign in to continue</strong>
+      <p>Sign in to send chat. Your cart stays.</p>
+      <button id="modal-close" type="button">Got it</button>
+    </div>
+  </div>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+<script>
+const count = document.getElementById('count');
+const modal = document.getElementById('modal');
+const video = document.getElementById('player');
+const wait = document.getElementById('stream-wait');
+const streamUrl = 'http://localhost:8888/live/{match_id}/index.m3u8';
+document.getElementById('add').onclick = () => {{
+  count.textContent = String(Number(count.textContent) + 1);
+}};
+document.getElementById('send').onclick = () => {{
+  modal.hidden = false;
+}};
+document.getElementById('modal-close').onclick = () => {{
+  modal.hidden = true;
+}};
+let hls = null;
+function markPlaying() {{ wait.dataset.state = 'playing'; }}
+function markWaiting() {{ wait.dataset.state = 'waiting'; }}
+function attachStream() {{
+  if (window.Hls && Hls.isSupported()) {{
+    if (hls) {{ hls.destroy(); hls = null; }}
+    hls = new Hls({{ enableWorker:true, lowLatencyMode:true }});
+    hls.loadSource(streamUrl);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {{ video.play().catch(() => {{}}); markPlaying(); }});
+    hls.on(Hls.Events.ERROR, (_, data) => {{ if (data.fatal) markWaiting(); }});
+  }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+    video.src = streamUrl;
+    video.addEventListener('loadedmetadata', () => {{ video.play().catch(() => {{}}); markPlaying(); }});
+    video.addEventListener('error', markWaiting);
+  }} else {{
+    video.setAttribute('src', streamUrl);
+  }}
+}}
+attachStream();
+setInterval(() => {{ if (wait.dataset.state === 'waiting') attachStream(); }}, 5000);
+async function refresh() {{
+  try {{
+    const res = await fetch('/audit/v1/score/{match_id}');
+    const body = await res.json();
+    document.getElementById('live-score-banner').textContent =
+      (body.home && body.home.score) + ' - ' + (body.away && body.away.score);
+  }} catch (e) {{}}
+}}
+setInterval(refresh, 200);
 </script>
-</main></body></html>"""
+</body></html>"""

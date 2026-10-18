@@ -257,17 +257,34 @@ class _RootPageState extends State<RootPage> {
   Widget build(BuildContext context) {
     if (!ready) return const Scaffold(body: Center(child: CircularProgressIndicator()));
     if (guestLink != null) {
-      final title = guestLink!.contains('cs-session') ? 'Co-Stream' : 'Live match';
+      final costream = guestLink!.contains('cs-session');
       return Scaffold(
+        backgroundColor: const Color(0xFF101412),
         body: SafeArea(
           child: Padding(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: Theme.of(context).textTheme.headlineMedium),
+                Text(costream ? 'Co-Stream' : 'Live match', style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 16),
+                Container(
+                  height: 180,
+                  width: double.infinity,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(color: const Color(0xFF17211C), borderRadius: BorderRadius.circular(16)),
+                  child: const Text('LIVE', style: TextStyle(color: Color(0xFFF5C518), fontWeight: FontWeight.w800, letterSpacing: 1.4)),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(color: const Color(0xFF0B3D2E), borderRadius: BorderRadius.circular(16)),
+                  child: Text(costream ? 'Grid' : '1 - 0', style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w800)),
+                ),
                 const SizedBox(height: 12),
-                Text(guestLink!, key: const Key('deep-link-target')),
+                Text(guestLink!, key: const Key('deep-link-target'), style: const TextStyle(color: Color(0xFFB7C4BC))),
               ],
             ),
           ),
