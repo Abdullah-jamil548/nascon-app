@@ -721,6 +721,82 @@ def erase(db: Session, user_id: str) -> dict:
 
 
 def guest_page(score: str, match_id: str = "match-m1") -> str:
+    is_costream = match_id.startswith("cs-session")
+    mode_label = "Co-stream" if is_costream else "Guest live"
+    stream_path = f"costream/{match_id}" if is_costream else f"live/{match_id}"
+    stage_html = (
+        f"""
+  <section class="stage costream" aria-label="Co-stream grid">
+    <div class="cs-grid" data-testid="guest-video-player">
+      <div class="cs-pane"><span>alpha-1</span><em>LIVE</em></div>
+      <div class="cs-pane"><span>alpha-2</span><em>LIVE</em></div>
+      <div class="cs-pane"><span>beta-1</span><em>LIVE</em></div>
+      <div class="cs-pane"><span>beta-2</span><em>LIVE</em></div>
+    </div>
+    <div id="live-score-banner" data-testid="live-score-banner" role="status">{score}</div>
+    <div class="merch-overlay">var-jersey-001-L</div>
+  </section>
+"""
+        if is_costream
+        else f"""
+  <section class="stage" aria-label="Match stream">
+    <video id="player" data-testid="guest-video-player" aria-label="Live match stream" controls playsinline></video>
+    <div class="stream-wait" id="stream-wait" data-state="waiting">
+      <div>
+        <strong>Waiting for live ingest</strong>
+        <span>Score, cart, and chat still work · stream starts when a publisher connects</span>
+      </div>
+    </div>
+    <div id="live-score-banner" data-testid="live-score-banner" role="status">{score}</div>
+    <div class="merch-overlay">var-jersey-001-L</div>
+  </section>
+"""
+    )
+    hls_boot = (
+        "/* costream grid — composite HLS optional */"
+        if is_costream
+        else f"""
+let hls = null;
+const video = document.getElementById('player');
+const wait = document.getElementById('stream-wait');
+const streamUrl = 'http://localhost:8888/{stream_path}/index.m3u8';
+function markPlaying() {{ wait.dataset.state = 'playing'; }}
+function markWaiting() {{ wait.dataset.state = 'waiting'; }}
+function attachStream() {{
+  if (window.Hls && Hls.isSupported()) {{
+    if (hls) {{ hls.destroy(); hls = null; }}
+    hls = new Hls({{ enableWorker:true, lowLatencyMode:true }});
+    hls.loadSource(streamUrl);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {{ video.play().catch(() => {{}}); markPlaying(); }});
+    hls.on(Hls.Events.ERROR, (_, data) => {{ if (data.fatal) markWaiting(); }});
+  }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+    video.src = streamUrl;
+    video.addEventListener('loadedmetadata', () => {{ video.play().catch(() => {{}}); markPlaying(); }});
+    video.addEventListener('error', markWaiting);
+  }} else {{
+    video.setAttribute('src', streamUrl);
+  }}
+}}
+attachStream();
+setInterval(() => {{ if (wait.dataset.state === 'waiting') attachStream(); }}, 5000);
+"""
+    )
+    score_poll = (
+        f"""
+async function refresh() {{
+  try {{
+    const res = await fetch('/audit/v1/score/{match_id}');
+    const body = await res.json();
+    document.getElementById('live-score-banner').textContent =
+      (body.home && body.home.score) + ' - ' + (body.away && body.away.score);
+  }} catch (e) {{}}
+}}
+setInterval(refresh, 200);
+"""
+        if not is_costream
+        else ""
+    )
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -759,6 +835,15 @@ main {{ max-width:720px; margin:0 auto; padding:20px 16px 40px; }}
 video {{
   display:block; width:100%; aspect-ratio:16/9; min-width:48px; min-height:48px; background:#000; object-fit:cover;
 }}
+.cs-grid {{
+  display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; gap:6px;
+  aspect-ratio:16/9; padding:6px; background:#0a0e0c; min-width:48px; min-height:48px;
+}}
+.cs-pane {{
+  display:grid; place-items:center; border-radius:10px; background:#17211c; border:1px solid var(--line);
+}}
+.cs-pane span {{ font-weight:800; font-size:14px; }}
+.cs-pane em {{ font-style:normal; color:var(--live); font-size:11px; font-weight:800; letter-spacing:.06em; }}
 .stream-wait {{
   position:absolute; inset:0; z-index:1; display:grid; place-items:center; text-align:center;
   background:
@@ -774,6 +859,10 @@ video {{
   min-width:88px; min-height:48px; padding:10px 14px; border-radius:12px;
   background:rgba(11,61,46,.92); color:#fff; font-size:22px; font-weight:800; letter-spacing:.04em;
   display:flex; align-items:center; justify-content:center; backdrop-filter:blur(6px);
+}}
+.merch-overlay {{
+  position:absolute; right:12px; bottom:12px; z-index:2;
+  padding:8px 10px; border-radius:10px; background:rgba(0,0,0,.55); font-size:12px; font-weight:700;
 }}
 .grid {{ display:grid; gap:14px; margin-top:16px; }}
 @media (min-width:640px) {{ .grid {{ grid-template-columns:1.1fr .9fr; align-items:start; }} }}
@@ -828,21 +917,12 @@ button:active {{ transform:translateY(1px); }}
   <header class="brand">
     <div>
       <h1>NaSCon</h1>
-      <p>Guest live · match {match_id}</p>
+      <p>{mode_label} · {match_id}</p>
     </div>
     <span class="pill">LIVE</span>
   </header>
 
-  <section class="stage" aria-label="Match stream">
-    <video id="player" data-testid="guest-video-player" aria-label="Live match stream" controls playsinline></video>
-    <div class="stream-wait" id="stream-wait" data-state="waiting">
-      <div>
-        <strong>Waiting for live ingest</strong>
-        <span>Score, cart, and chat still work · stream starts when a publisher connects</span>
-      </div>
-    </div>
-    <div id="live-score-banner" data-testid="live-score-banner" role="status">{score}</div>
-  </section>
+{stage_html}
 
   <div class="grid">
     <section class="panel" aria-label="Pinned merchandise">
@@ -882,10 +962,7 @@ button:active {{ transform:translateY(1px); }}
 <script>
 const count = document.getElementById('count');
 const modal = document.getElementById('modal');
-const video = document.getElementById('player');
-const wait = document.getElementById('stream-wait');
 const authStatus = document.getElementById('auth-status');
-const streamUrl = 'http://localhost:8888/live/{match_id}/index.m3u8';
 let authToken = null;
 const chatList = document.getElementById('chat');
 const field = document.getElementById('field');
@@ -972,35 +1049,7 @@ document.getElementById('auth-login').onclick = async () => {{
     authStatus.textContent = err.message || 'Could not sign in';
   }}
 }};
-let hls = null;
-function markPlaying() {{ wait.dataset.state = 'playing'; }}
-function markWaiting() {{ wait.dataset.state = 'waiting'; }}
-function attachStream() {{
-  if (window.Hls && Hls.isSupported()) {{
-    if (hls) {{ hls.destroy(); hls = null; }}
-    hls = new Hls({{ enableWorker:true, lowLatencyMode:true }});
-    hls.loadSource(streamUrl);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => {{ video.play().catch(() => {{}}); markPlaying(); }});
-    hls.on(Hls.Events.ERROR, (_, data) => {{ if (data.fatal) markWaiting(); }});
-  }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
-    video.src = streamUrl;
-    video.addEventListener('loadedmetadata', () => {{ video.play().catch(() => {{}}); markPlaying(); }});
-    video.addEventListener('error', markWaiting);
-  }} else {{
-    video.setAttribute('src', streamUrl);
-  }}
-}}
-attachStream();
-setInterval(() => {{ if (wait.dataset.state === 'waiting') attachStream(); }}, 5000);
-async function refresh() {{
-  try {{
-    const res = await fetch('/audit/v1/score/{match_id}');
-    const body = await res.json();
-    document.getElementById('live-score-banner').textContent =
-      (body.home && body.home.score) + ' - ' + (body.away && body.away.score);
-  }} catch (e) {{}}
-}}
-setInterval(refresh, 200);
+{hls_boot}
+{score_poll}
 </script>
 </body></html>"""

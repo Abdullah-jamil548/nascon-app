@@ -288,6 +288,11 @@ class _GuestLivePageState extends State<GuestLivePage> {
   Timer? _timer;
   String score = '1 - 0';
   String subtitle = '';
+  String layout = 'grid_4';
+  List<String> participants = const ['player-alpha-1', 'player-alpha-2', 'player-beta-1', 'player-beta-2'];
+  String? spotlight;
+  final Set<String> muted = {};
+  final Set<String> kicked = {};
 
   bool get costream => widget.link.contains('cs-session');
 
@@ -299,6 +304,8 @@ class _GuestLivePageState extends State<GuestLivePage> {
     if (parts.isEmpty) return 'match-m1';
     return parts.last;
   }
+
+  List<String> get activeParticipants => participants.where((p) => !kicked.contains(p)).toList();
 
   @override
   void initState() {
@@ -334,16 +341,139 @@ class _GuestLivePageState extends State<GuestLivePage> {
       final data = await widget.api.send('POST', '/audit/v1/costream/session', {
         'session_id': matchId,
         'host_player_id': 'player-alpha-1',
-        'participants': ['player-alpha-1', 'player-alpha-2'],
-        'layout': 'grid_2',
+        'participants': participants,
+        'layout': 'grid_4',
         'simulate_host_drop': false,
       });
       if (!mounted) return;
       setState(() {
-        score = '${data['layout'] ?? 'grid_2'}';
-        subtitle = '${data['participant_count'] ?? 0} players · ${data['status'] ?? 'active'}';
+        layout = '${data['layout'] ?? 'grid_4'}';
+        score = layout;
+        final active = data['active_participants'];
+        if (active is List && active.isNotEmpty) {
+          participants = active.map((e) => '$e').toList();
+        }
+        subtitle = '${data['participant_count'] ?? participants.length} players · ${data['status'] ?? 'active'} · host ${data['active_host'] ?? ''}';
       });
     } catch (_) {}
+  }
+
+  Widget _pane(String label, {bool big = false}) {
+    final isMuted = muted.contains(label);
+    final isSpot = spotlight == label;
+    return Container(
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: isSpot ? const Color(0xFF0B3D2E) : const Color(0xFF17211C),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: isSpot ? const Color(0xFFF5C518) : const Color(0xFF2A3A33), width: isSpot ? 2 : 1),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(label.replaceFirst('player-', ''), style: TextStyle(color: Colors.white, fontSize: big ? 16 : 12, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          Text(isMuted ? 'MUTED' : 'LIVE', style: TextStyle(color: isMuted ? Colors.redAccent : const Color(0xFFF5C518), fontSize: 11, fontWeight: FontWeight.w800)),
+        ],
+      ),
+    );
+  }
+
+  Widget _stage() {
+    if (!costream) {
+      return Stack(
+        children: [
+          Container(
+            height: 220,
+            width: double.infinity,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: const Color(0xFF17211C), borderRadius: BorderRadius.circular(16)),
+            child: const Text('LIVE', style: TextStyle(color: Color(0xFFF5C518), fontWeight: FontWeight.w800, letterSpacing: 1.4, fontSize: 28)),
+          ),
+          Positioned(
+            left: 12,
+            top: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(color: const Color(0xFF0B3D2E), borderRadius: BorderRadius.circular(10)),
+              child: Text(score, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 18)),
+            ),
+          ),
+          Positioned(
+            right: 12,
+            bottom: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(10)),
+              child: const Text('var-jersey-001-L', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+            ),
+          ),
+        ],
+      );
+    }
+    final active = activeParticipants;
+    return Column(
+      children: [
+        SizedBox(
+          height: 240,
+          child: active.isEmpty
+              ? _pane('ended', big: true)
+              : active.length == 1
+                  ? _pane(active.first, big: true)
+                  : active.length == 2
+                      ? Row(children: [Expanded(child: _pane(active[0])), const SizedBox(width: 8), Expanded(child: _pane(active[1]))])
+                      : Column(
+                          children: [
+                            Expanded(
+                              child: Row(children: [
+                                Expanded(child: _pane(active[0])),
+                                const SizedBox(width: 8),
+                                Expanded(child: _pane(active.length > 1 ? active[1] : '—')),
+                              ]),
+                            ),
+                            const SizedBox(height: 8),
+                            Expanded(
+                              child: Row(children: [
+                                Expanded(child: _pane(active.length > 2 ? active[2] : '—')),
+                                const SizedBox(width: 8),
+                                Expanded(child: _pane(active.length > 3 ? active[3] : '—')),
+                              ]),
+                            ),
+                          ],
+                        ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final p in active) ...[
+              OutlinedButton(
+                onPressed: () => setState(() {
+                  if (muted.contains(p)) {
+                    muted.remove(p);
+                  } else {
+                    muted.add(p);
+                  }
+                }),
+                child: Text(muted.contains(p) ? 'Unmute' : 'Mute'),
+              ),
+              OutlinedButton(
+                onPressed: () => setState(() => spotlight = spotlight == p ? null : p),
+                child: Text(spotlight == p ? 'Unspot' : 'Spotlight'),
+              ),
+              OutlinedButton(
+                onPressed: () => setState(() {
+                  kicked.add(p);
+                  if (spotlight == p) spotlight = null;
+                }),
+                child: const Text('Kick'),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
   }
 
   @override
@@ -351,7 +481,7 @@ class _GuestLivePageState extends State<GuestLivePage> {
     return Scaffold(
       backgroundColor: const Color(0xFF101412),
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -362,21 +492,17 @@ class _GuestLivePageState extends State<GuestLivePage> {
                 Text(subtitle, style: const TextStyle(color: Color(0xFFB7C4BC))),
               ],
               const SizedBox(height: 16),
-              Container(
-                height: 180,
-                width: double.infinity,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(color: const Color(0xFF17211C), borderRadius: BorderRadius.circular(16)),
-                child: const Text('LIVE', style: TextStyle(color: Color(0xFFF5C518), fontWeight: FontWeight.w800, letterSpacing: 1.4)),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 18),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(color: const Color(0xFF0B3D2E), borderRadius: BorderRadius.circular(16)),
-                child: Text(score, style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w800)),
-              ),
+              _stage(),
+              if (!costream) ...[
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(color: const Color(0xFF0B3D2E), borderRadius: BorderRadius.circular(16)),
+                  child: Text(score, style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w800)),
+                ),
+              ],
               const SizedBox(height: 12),
               Text(widget.link, key: const Key('deep-link-target'), style: const TextStyle(color: Color(0xFFB7C4BC))),
             ],
@@ -2215,6 +2341,252 @@ IconData _linkIcon(String link) {
   return Icons.cloud_done;
 }
 
+class QrOpenPage extends StatefulWidget {
+  const QrOpenPage({super.key, required this.api});
+  final Api api;
+
+  @override
+  State<QrOpenPage> createState() => _QrOpenPageState();
+}
+
+class _QrOpenPageState extends State<QrOpenPage> {
+  final controller = TextEditingController(text: 'match-m1');
+  String note = 'Paste a short code, entity id, or nascon:// link. Demo buttons skip the camera.';
+  bool busy = false;
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _openRaw(String link) async {
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => GuestLivePage(api: widget.api, link: link)));
+  }
+
+  Future<void> _resolve(String raw) async {
+    final input = raw.trim();
+    if (input.isEmpty) return;
+    if (input.startsWith('nascon://')) {
+      await _openRaw(input);
+      return;
+    }
+    setState(() {
+      busy = true;
+      note = 'Resolving…';
+    });
+    try {
+      var entity = input;
+      if (input.contains('/q/')) {
+        entity = input.split('/q/').last.split(RegExp(r'[?#]')).first;
+      } else if (input.startsWith('http')) {
+        final uri = Uri.parse(input);
+        entity = uri.pathSegments.isNotEmpty ? uri.pathSegments.last : input;
+      }
+      final data = await widget.api.send('GET', '/audit/v1/qr/$entity?inspect=true');
+      final deep = '${data['deep_link_uri'] ?? 'nascon://entity/$entity'}';
+      final target = '${data['target_route'] ?? ''}';
+      final link = target.contains('costream') || entity.startsWith('cs-session')
+          ? 'nascon://costream/$entity'
+          : deep.contains('cs-session')
+              ? deep
+              : (entity.startsWith('match-') || target.contains('/matches/') ? 'nascon://live/$entity' : deep);
+      setState(() => note = 'Opened $entity → $link');
+      await _openRaw(link);
+    } on ApiException catch (caught) {
+      // Fallback demo routes when QR row missing
+      final fallback = input.startsWith('cs-') ? 'nascon://costream/$input' : 'nascon://live/$input';
+      setState(() => note = '${caught.message} · opening $fallback');
+      await _openRaw(fallback);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Scan / open QR')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Container(
+            height: 180,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: const Color(0xFF17211C),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: scheme.primary.withValues(alpha: 0.35)),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.qr_code_2, size: 64, color: scheme.secondary),
+                const SizedBox(height: 10),
+                const Text('VIEWFINDER', style: TextStyle(color: Color(0xFFF5C518), fontWeight: FontWeight.w800, letterSpacing: 1.2)),
+                const SizedBox(height: 6),
+                Text('Camera optional — use codes below', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: controller,
+            decoration: const InputDecoration(
+              labelText: 'Code / URL / nascon://',
+              border: OutlineInputBorder(),
+              hintText: 'match-m1 or cs-session-101',
+            ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: busy ? null : () => _resolve(controller.text),
+            icon: busy ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.link),
+            label: Text(busy ? 'Opening…' : 'Open'),
+          ),
+          const SizedBox(height: 18),
+          const Text('Demo scans', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton(onPressed: () => _resolve('match-m1'), child: const Text('Match m1')),
+              OutlinedButton(onPressed: () => _resolve('cs-session-101'), child: const Text('Co-stream 101')),
+              OutlinedButton(onPressed: () => _resolve('http://localhost:8080/q/m1-live'), child: const Text('Short /q/m1-live')),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(note, style: TextStyle(color: scheme.onSurfaceVariant)),
+        ],
+      ),
+    );
+  }
+}
+
+class GoLivePage extends StatefulWidget {
+  const GoLivePage({super.key, required this.api});
+  final Api api;
+
+  @override
+  State<GoLivePage> createState() => _GoLivePageState();
+}
+
+class _GoLivePageState extends State<GoLivePage> {
+  String note = 'Generate a key, paste RTMP into OBS, or use the phone preview as host UI.';
+  String keyText = '';
+  String rtmp = '';
+  String playback = '';
+  bool live = false;
+  bool muted = false;
+
+  Future<void> run(String action) async {
+    try {
+      final body = await widget.api.send('POST', '/audit/v1/stream/key', {
+        'action': action,
+        'player_id': 'player-alpha-1',
+        'label': 'phone-go-live',
+      });
+      setState(() {
+        keyText = '${body['stream_key'] ?? ''}';
+        final endpoints = body['ingest_endpoints'];
+        rtmp = endpoints is Map ? '${endpoints['rtmp'] ?? ''}' : '';
+        playback = '${body['playback_url'] ?? ''}';
+        live = action != 'revoke' && keyText.isNotEmpty;
+        note = action == 'revoke' ? 'Stream key revoked.' : 'Stream key ready — host controls below.';
+      });
+    } on ApiException catch (caught) {
+      setState(() => note = caught.message);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      backgroundColor: const Color(0xFF101412),
+      appBar: AppBar(title: const Text('Go Live'), backgroundColor: const Color(0xFF101412), foregroundColor: Colors.white),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          AspectRatio(
+            aspectRatio: 9 / 12,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0B3D2E),
+                    borderRadius: BorderRadius.circular(18),
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF126B4F), Color(0xFF0B3D2E), Color(0xFF17211C)],
+                    ),
+                  ),
+                  alignment: Alignment.center,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(live ? Icons.videocam : Icons.videocam_off, size: 56, color: muted ? Colors.redAccent : const Color(0xFFF5C518)),
+                      const SizedBox(height: 10),
+                      Text(live ? (muted ? 'ON AIR · MUTED' : 'ON AIR') : 'CAMERA PREVIEW', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, letterSpacing: 1.1)),
+                      const SizedBox(height: 6),
+                      const Text('Broadcast UI (OBS or phone as source)', style: TextStyle(color: Color(0xFFB7C4BC), fontSize: 12)),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  left: 12,
+                  top: 12,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(color: live ? Colors.redAccent : Colors.black54, borderRadius: BorderRadius.circular(8)),
+                    child: Text(live ? 'LIVE' : 'STANDBY', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton(onPressed: () => run('generate'), child: const Text('Generate key')),
+              OutlinedButton(onPressed: () => run('rotate'), style: OutlinedButton.styleFrom(foregroundColor: Colors.white), child: const Text('Rotate')),
+              OutlinedButton(onPressed: () => run('revoke'), style: OutlinedButton.styleFrom(foregroundColor: Colors.white), child: const Text('Revoke')),
+              OutlinedButton(
+                onPressed: () => setState(() => muted = !muted),
+                style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
+                child: Text(muted ? 'Unmute mic' : 'Mute mic'),
+              ),
+              OutlinedButton(
+                onPressed: () => setState(() {
+                  live = !live;
+                  note = live ? 'Local preview marked live.' : 'Preview standby.';
+                }),
+                style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
+                child: Text(live ? 'End preview' : 'Start preview'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(note, style: TextStyle(color: scheme.onSurfaceVariant)),
+          if (keyText.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            SelectableText('Key: $keyText', style: const TextStyle(color: Colors.white)),
+            if (rtmp.isNotEmpty) SelectableText('RTMP: $rtmp', style: const TextStyle(color: Color(0xFFB7C4BC))),
+            if (playback.isNotEmpty) SelectableText('Play: $playback', style: const TextStyle(color: Color(0xFFB7C4BC))),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class MorePage extends StatelessWidget {
   const MorePage({super.key, required this.api, required this.queue, required this.reports, required this.onSync, required this.onLogout, required this.onChanged});
   final Api api;
@@ -2243,68 +2615,12 @@ class MorePage extends StatelessWidget {
     onChanged();
   }
 
-  Future<void> _goLive(BuildContext context) async {
-    var note = 'Generate a key, paste the RTMP URL into OBS, then open the playback URL.';
-    var keyText = '';
-    var rtmp = '';
-    var playback = '';
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheet) {
-          Future<void> run(String action) async {
-            try {
-              final body = await api.send('POST', '/audit/v1/stream/key', {
-                'action': action,
-                'player_id': 'player-alpha-1',
-                'label': 'phone-go-live',
-              });
-              setSheet(() {
-                keyText = '${body['stream_key'] ?? ''}';
-                final endpoints = body['ingest_endpoints'];
-                rtmp = endpoints is Map ? '${endpoints['rtmp'] ?? ''}' : '';
-                playback = '${body['playback_url'] ?? ''}';
-                note = action == 'revoke' ? 'Stream key revoked.' : 'Stream key ready for OBS.';
-              });
-            } on ApiException catch (caught) {
-              setSheet(() => note = caught.message);
-            }
-          }
+  void _goLive(BuildContext context) {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => GoLivePage(api: api)));
+  }
 
-          return Padding(
-            padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + MediaQuery.viewInsetsOf(context).bottom),
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Go Live', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 8),
-                  Text(note),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      FilledButton(onPressed: () => run('generate'), child: const Text('Generate')),
-                      OutlinedButton(onPressed: () => run('rotate'), child: const Text('Rotate')),
-                      OutlinedButton(onPressed: () => run('revoke'), child: const Text('Revoke')),
-                    ],
-                  ),
-                  if (keyText.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    SelectableText('Key: $keyText'),
-                    if (rtmp.isNotEmpty) SelectableText('RTMP: $rtmp'),
-                    if (playback.isNotEmpty) SelectableText('Play: $playback'),
-                  ],
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
+  void _openQr(BuildContext context) {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => QrOpenPage(api: api)));
   }
 
   Future<void> _signOut(BuildContext context) async {
@@ -2400,9 +2716,17 @@ class MorePage extends StatelessWidget {
               ListTile(
                 leading: Icon(Icons.videocam_outlined, color: scheme.primary),
                 title: const Text('Go Live', style: TextStyle(fontWeight: FontWeight.w700)),
-                subtitle: const Text('Generate or revoke a stream key for OBS'),
+                subtitle: const Text('Camera preview + stream key for OBS'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _goLive(context),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: Icon(Icons.qr_code_scanner, color: scheme.primary),
+                title: const Text('Scan / open QR', style: TextStyle(fontWeight: FontWeight.w700)),
+                subtitle: const Text('Open match or co-stream from a code'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openQr(context),
               ),
               const Divider(height: 1),
               ListTile(

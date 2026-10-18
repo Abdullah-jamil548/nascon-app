@@ -456,7 +456,7 @@ def create_app() -> FastAPI:
 
     @app.get("/web/costream/{session_id}")
     def guest_costream(session_id: str):
-        return HTMLResponse(day2.guest_page(session_id))
+        return HTMLResponse(day2.guest_page("Grid", session_id))
 
     @app.websocket("/ws/matches/{match_id}")
     async def match_ws(websocket: WebSocket, match_id: str):
