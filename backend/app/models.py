@@ -225,6 +225,62 @@ class DomainEvent(Base):
     payload: Mapped[dict] = mapped_column(JSON)
 
 
+class QrLink(Base):
+    __tablename__ = "qr_links"
+    entity_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String(20))
+    short_code: Mapped[str] = mapped_column(String(64), unique=True)
+    short_url: Mapped[str] = mapped_column(String(200))
+    scan_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class QrNotice(Base):
+    __tablename__ = "qr_notices"
+    entity_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20))
+
+
+class StreamKeyRow(Base):
+    __tablename__ = "stream_keys"
+    player_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    stream_key: Mapped[str] = mapped_column(String(80))
+    label: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20))
+
+
+class RevokedStreamKey(Base):
+    __tablename__ = "revoked_stream_keys"
+    stream_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    player_id: Mapped[str] = mapped_column(String(64))
+
+
+class MemberCart(Base):
+    __tablename__ = "member_carts"
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    items: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class GuestToken(Base):
+    __tablename__ = "guest_tokens"
+    token: Mapped[str] = mapped_column(String(80), primary_key=True)
+    merged: Mapped[bool] = mapped_column(Boolean, default=False)
+    body_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class CostreamSave(Base):
+    __tablename__ = "costream_saves"
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    body_hash: Mapped[str] = mapped_column(String(64))
+    response: Mapped[dict] = mapped_column(JSON)
+
+
+class DlqItem(Base):
+    __tablename__ = "dlq_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+
+
 class ClientRequest(Base):
     __tablename__ = "client_requests"
     __table_args__ = (UniqueConstraint("kind", "client_id"),)

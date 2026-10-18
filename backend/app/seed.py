@@ -153,6 +153,7 @@ def seed(db, seed_value: int = 42, stock: dict | None = None) -> dict:
     db.add(Player(player_id="player-alpha-1", name="Alpha One", position="gk", club_id="club-alpha-1", league_id="league-alpha-1"))
     db.add(Player(player_id="player-alpha-2", name="Alpha Two", position="df", club_id="club-alpha-2", league_id="league-alpha-1"))
     db.add(Player(player_id="player-beta-1", name="Beta One", position="gk", club_id="club-beta-1", league_id="league-beta-1"))
+    db.add(Player(player_id="player-beta-2", name="Beta Two", position="df", club_id="club-beta-1", league_id="league-beta-1"))
     accounts = [
         ("admin@nascon.test", "super_admin", "Platform Admin", None, None, None, None),
         ("organizer@nascon.test", "league_organizer", "League Organizer", "tenant-alpha", "league-alpha-1", None, None),
@@ -242,6 +243,9 @@ def seed(db, seed_value: int = 42, stock: dict | None = None) -> dict:
     _demo_event(db, "demo-done-start", "demo-done", "match_start", {}, 1)
     _demo_event(db, "demo-done-goal", "demo-done", "score", {"team_id": "demo-a", "event_type": "goal"}, 2)
     _demo_event(db, "demo-done-end", "demo-done", "match_end", {}, 3)
+    from app.services.day2 import seed_phase2
+
+    seed_phase2(db)
     db.add(Meta(id=1, seed=seed_value, seeded=True))
     db.flush()
     return {

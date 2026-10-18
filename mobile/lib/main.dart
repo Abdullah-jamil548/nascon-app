@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -218,6 +219,7 @@ class RootPage extends StatefulWidget {
 class _RootPageState extends State<RootPage> {
   bool ready = false;
   bool signedIn = false;
+  String? guestLink;
 
   @override
   void initState() {
@@ -230,6 +232,17 @@ class _RootPageState extends State<RootPage> {
       if (mounted) setState(() => signedIn = false);
     };
     await widget.api.load();
+    String? link;
+    try {
+      link = await const MethodChannel('nascon/link').invokeMethod<String>('initial');
+    } catch (_) {}
+    if (link != null && link.startsWith('nascon://')) {
+      setState(() {
+        guestLink = link;
+        ready = true;
+      });
+      return;
+    }
     final tenant = await widget.api.local.readMap('tenant');
     if (tenant != null) {
       widget.onTenant(_color(tenant['primary_color']), _color(tenant['secondary_color']));
@@ -243,6 +256,24 @@ class _RootPageState extends State<RootPage> {
   @override
   Widget build(BuildContext context) {
     if (!ready) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (guestLink != null) {
+      final title = guestLink!.contains('cs-session') ? 'Co-Stream' : 'Live match';
+      return Scaffold(
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.headlineMedium),
+                const SizedBox(height: 12),
+                Text(guestLink!, key: const Key('deep-link-target')),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     if (!signedIn) {
       return LoginPage(
         api: widget.api,

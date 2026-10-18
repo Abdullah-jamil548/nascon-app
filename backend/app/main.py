@@ -3,9 +3,9 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from time import time
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy import text
 
 from app.core.errors import ApiError, validation
@@ -14,10 +14,11 @@ from app.db import init_db, session
 from app.domain.fixtures import generate
 from app.models import Meta
 from app.seed import seed
-from app.services import ops, rest
+from app.services import day2, ops, rest
 
 LIMIT = 1_000_000
 HITS: dict[str, deque] = defaultdict(deque)
+ROOMS: dict[str, set] = defaultdict(set)
 
 
 def _ensure_seeded() -> None:
@@ -138,8 +139,18 @@ def create_app() -> FastAPI:
 
     @app.post("/audit/v1/events")
     async def events(request: Request):
+        _reject_guest(request)
         body = await _body(request)
+        if isinstance(body, dict) and body.get("type") in {"postponed", "cancelled", "abandoned"}:
+            return db_call(lambda db: day2.mark_match(db, body))
         code, payload = db_call(lambda db: ops.append_event(db, body))
+        match_id = body.get("match_id") if isinstance(body, dict) else None
+        if match_id:
+            try:
+                view = db_call(lambda db: ops.score_view(db, match_id))
+                await _broadcast(match_id, view)
+            except Exception:
+                pass
         return JSONResponse(payload, status_code=code)
 
     @app.get("/audit/v1/score/{match_id}")
@@ -168,6 +179,7 @@ def create_app() -> FastAPI:
 
     @app.post("/audit/v1/checkout")
     async def checkout(request: Request):
+        _reject_guest(request)
         body = await _body(request)
         code, payload = db_call(lambda db: rest.checkout(db, body))
         return JSONResponse(payload, status_code=code)
@@ -269,6 +281,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/checkout")
     async def api_checkout(request: Request):
+        _reject_guest(request)
         _user(request)
         body = await _body(request)
         code, payload = db_call(lambda db: rest.checkout(db, body))
@@ -276,6 +289,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/events")
     async def api_events(request: Request):
+        _reject_guest(request)
         _user(request)
         body = await _body(request)
         code, payload = db_call(lambda db: ops.append_event(db, body))
@@ -283,6 +297,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/roster/transfer")
     async def api_transfer(request: Request):
+        _reject_guest(request)
         _user(request)
         body = await _body(request)
         code, payload = db_call(lambda db: rest.do_transfer(db, body))
@@ -319,7 +334,125 @@ def create_app() -> FastAPI:
         body = await _body(request)
         return db_call(lambda db: rest.pin_product(db, match_id, body.get("variant_id")))
 
+    @app.post("/api/v1/chat")
+    async def chat(request: Request):
+        _reject_guest(request)
+        _user(request)
+        return {"status": "accepted"}
+
+    @app.post("/audit/v1/stream/key")
+    async def stream_key(request: Request):
+        body = await _body(request)
+        code, payload = db_call(lambda db: day2.stream_key(db, body))
+        return JSONResponse(payload, status_code=code)
+
+    @app.post("/audit/v1/costream/session")
+    async def costream(request: Request):
+        body = await _body(request)
+        code, payload = db_call(lambda db: day2.costream(db, body))
+        return JSONResponse(payload, status_code=code)
+
+    @app.get("/audit/v1/qr/{entity_id}/export.svg")
+    def qr_svg(entity_id: str):
+        body, media = db_call(lambda db: day2.qr_export(db, entity_id, "svg"))
+        return Response(content=body, media_type=media)
+
+    @app.get("/audit/v1/qr/{entity_id}/export.png")
+    def qr_png(entity_id: str):
+        body, media = db_call(lambda db: day2.qr_export(db, entity_id, "png"))
+        return Response(content=body, media_type=media)
+
+    @app.get("/audit/v1/qr/{entity_id}/export.pdf")
+    def qr_pdf(entity_id: str):
+        body, media = db_call(lambda db: day2.qr_export(db, entity_id, "pdf"))
+        return Response(content=body, media_type=media)
+
+    @app.get("/audit/v1/qr/{entity_id}")
+    def qr(entity_id: str, inspect: bool = False):
+        return db_call(lambda db: day2.qr_view(db, entity_id, inspect))
+
+    @app.get("/q/{short_code}")
+    def short_link(short_code: str):
+        target = db_call(lambda db: day2.qr_target(db, short_code))
+        return RedirectResponse(target, status_code=302)
+
+    @app.post("/audit/v1/guest/cart-merge")
+    async def cart_merge(request: Request):
+        body = await _body(request)
+        code, payload = db_call(lambda db: day2.cart_merge(db, body))
+        return JSONResponse(payload, status_code=code)
+
+    @app.post("/audit/v1/moderation/test")
+    async def moderation(request: Request):
+        body = await _body(request)
+        return db_call(lambda db: day2.moderate(db, body))
+
+    @app.get("/metrics")
+    def metrics():
+        text_body = db_call(day2.metrics)
+        response = Response(content=text_body.encode("utf-8"))
+        response.headers["Content-Type"] = "text/plain; version=0.0.4"
+        return response
+
+    @app.delete("/audit/v1/privacy/user/{user_id}")
+    def privacy(user_id: str):
+        return db_call(lambda db: day2.erase(db, user_id))
+
+    @app.get("/web/matches/{match_id}/live")
+    def guest_live(match_id: str):
+        view = db_call(lambda db: ops.score_view(db, match_id))
+        score = f"{view['home']['score']} - {view['away']['score']}"
+        return HTMLResponse(day2.guest_page(score))
+
+    @app.get("/web/matches/{match_id}/{page}")
+    def guest_other(match_id: str, page: str):
+        return HTMLResponse(day2.guest_page("0 - 0"))
+
+    @app.get("/web/players/{player_id}")
+    def guest_player(player_id: str):
+        return HTMLResponse(day2.guest_page(player_id))
+
+    @app.get("/web/clubs/{club_id}")
+    def guest_club(club_id: str):
+        return HTMLResponse(day2.guest_page(club_id))
+
+    @app.get("/web/costream/{session_id}")
+    def guest_costream(session_id: str):
+        return HTMLResponse(day2.guest_page(session_id))
+
+    @app.websocket("/ws/matches/{match_id}")
+    async def match_ws(websocket: WebSocket, match_id: str):
+        await websocket.accept()
+        day2.WS_CONNECTIONS += 1
+        ROOMS[match_id].add(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            ROOMS[match_id].discard(websocket)
+            day2.WS_CONNECTIONS = max(0, day2.WS_CONNECTIONS - 1)
+
     return app
+
+
+async def _broadcast(match_id: str, message: dict) -> None:
+    dead = []
+    for socket in list(ROOMS.get(match_id, ())):
+        try:
+            await socket.send_json(message)
+        except Exception:
+            dead.append(socket)
+    for socket in dead:
+        ROOMS[match_id].discard(socket)
+
+
+def _reject_guest(request: Request) -> None:
+    header = request.headers.get("authorization") or ""
+    token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+    if token.startswith("guest_"):
+        raise ApiError(403, "GUEST_WRITE_FORBIDDEN", "Anonymous guest tokens cannot perform write mutations.", {"guest_token": token})
 
 
 def _user(request: Request) -> dict:
