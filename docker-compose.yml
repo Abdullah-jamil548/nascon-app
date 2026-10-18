@@ -33,6 +33,7 @@ services:
       DAY1_SALT: ${DAY1_SALT}
       DAY2_SALT: ${DAY2_SALT}
       JWT_SECRET: nascon-jwt-dev
+      MEDIAMTX_API: http://mediamtx:9997
     networks:
       default:
         aliases:
@@ -60,6 +61,11 @@ services:
       - "1935:1935"
       - "8888:8888"
       - "8889:8889"
+      - "9997:9997"
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml
+    depends_on:
+      - api
   selenium-hub:
     image: selenium/hub:4.25.0
     container_name: nascon-selenium-hub

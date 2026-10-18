@@ -1,4 +1,6 @@
+import asyncio
 import os
+import threading
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from time import time
@@ -19,20 +21,29 @@ from app.services import day2, ops, rest
 LIMIT = 1_000_000
 HITS: dict[str, deque] = defaultdict(deque)
 ROOMS: dict[str, set] = defaultdict(set)
+_READY = False
+_READY_LOCK = threading.Lock()
 
 
 def _ensure_seeded() -> None:
-    init_db()
-    from app.db import SessionLocal
+    global _READY
+    if _READY:
+        return
+    with _READY_LOCK:
+        if _READY:
+            return
+        init_db()
+        from app.db import SessionLocal
 
-    db = SessionLocal()
-    try:
-        meta = db.get(Meta, 1)
-        if meta is None:
-            seed(db)
-            db.commit()
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            meta = db.get(Meta, 1)
+            if meta is None:
+                seed(db)
+                db.commit()
+        finally:
+            db.close()
+        _READY = True
 
 
 @asynccontextmanager
@@ -344,7 +355,27 @@ def create_app() -> FastAPI:
     async def stream_key(request: Request):
         body = await _body(request)
         code, payload = db_call(lambda db: day2.stream_key(db, body))
+        if body.get("action") == "revoke":
+            day2.kick_stream(payload.get("stream_key"))
         return JSONResponse(payload, status_code=code)
+
+    @app.post("/internal/mediamtx/auth")
+    async def mediamtx_auth(request: Request):
+        body = await _body(request, optional=True)
+        if body.get("action") != "publish":
+            return Response(status_code=200)
+        allowed = db_call(lambda db: day2.publish_allowed(db, str(body.get("path") or "")))
+        return Response(status_code=200 if allowed else 401)
+
+    @app.post("/audit/v1/follow")
+    async def follow(request: Request):
+        _reject_guest(request)
+        body = await _body(request)
+        return db_call(lambda db: day2.follow(db, body))
+
+    @app.get("/audit/v1/athletes/{player_id}")
+    def athlete(player_id: str):
+        return db_call(lambda db: day2.athlete_profile(db, player_id))
 
     @app.post("/audit/v1/costream/session")
     async def costream(request: Request):
@@ -368,8 +399,12 @@ def create_app() -> FastAPI:
         return Response(content=body, media_type=media)
 
     @app.get("/audit/v1/qr/{entity_id}")
-    def qr(entity_id: str, inspect: bool = False):
-        return db_call(lambda db: day2.qr_view(db, entity_id, inspect))
+    async def qr(entity_id: str, inspect: bool = False):
+        if inspect:
+            cached = day2.cached_qr(entity_id)
+            if cached is not None:
+                return cached
+        return await asyncio.to_thread(db_call, lambda db: day2.qr_view(db, entity_id, inspect))
 
     @app.get("/q/{short_code}")
     def short_link(short_code: str):
@@ -385,7 +420,10 @@ def create_app() -> FastAPI:
     @app.post("/audit/v1/moderation/test")
     async def moderation(request: Request):
         body = await _body(request)
-        return db_call(lambda db: day2.moderate(db, body))
+        fast = day2.moderate_fast(body)
+        if fast is not None:
+            return fast
+        return await asyncio.to_thread(db_call, lambda db: day2.moderate(db, body))
 
     @app.get("/metrics")
     def metrics():
@@ -402,7 +440,7 @@ def create_app() -> FastAPI:
     def guest_live(match_id: str):
         view = db_call(lambda db: ops.score_view(db, match_id))
         score = f"{view['home']['score']} - {view['away']['score']}"
-        return HTMLResponse(day2.guest_page(score))
+        return HTMLResponse(day2.guest_page(score, match_id))
 
     @app.get("/web/matches/{match_id}/{page}")
     def guest_other(match_id: str, page: str):

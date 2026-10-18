@@ -1,0 +1,19 @@
+logLevel: info
+api: yes
+apiAddress: :9997
+rtmp: yes
+rtmpAddress: :1935
+hls: yes
+hlsAddress: :8888
+webrtc: yes
+webrtcAddress: :8889
+authMethod: http
+authHTTPAddress: http://api:8080/internal/mediamtx/auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+  - action: read
+  - action: playback
+paths:
+  all:

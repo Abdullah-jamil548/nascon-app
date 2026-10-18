@@ -24,6 +24,7 @@ from app.models import (
     Club,
     CostreamSave,
     DlqItem,
+    FollowEdge,
     GuestToken,
     MemberCart,
     QrLink,
@@ -91,6 +92,7 @@ def wipe(db: Session) -> None:
         OrderItem,
         Order,
         DlqItem,
+        FollowEdge,
         CostreamSave,
         GuestToken,
         MemberCart,
@@ -142,6 +144,9 @@ def do_reset(db: Session, body: dict | None) -> dict:
                 break
     if fields:
         raise validation(fields)
+    from app.services.day2 import reset_counters
+
+    reset_counters()
     wipe(db)
     return seed_baseline(db, seed_value if is_int(seed_value) else 42, stock if isinstance(stock, dict) else None)
 
@@ -292,6 +297,9 @@ def append_event(db: Session, body: dict) -> tuple[int, dict]:
     )
     db.flush()
     emit(db, "match.event", response)
+    from app.services.day2 import clear_qr_cache
+
+    clear_qr_cache()
     return 201, response
 
 

@@ -20,7 +20,7 @@ def database_url() -> str:
 def init_db(url: str | None = None) -> None:
     global engine, SessionLocal
     url = url or database_url()
-    kwargs = {"pool_pre_ping": True}
+    kwargs = {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 10, "pool_timeout": 5}
     if url.startswith("sqlite"):
         kwargs = {
             "connect_args": {"check_same_thread": False},

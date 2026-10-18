@@ -281,6 +281,14 @@ class DlqItem(Base):
     payload: Mapped[dict] = mapped_column(JSON)
 
 
+class FollowEdge(Base):
+    __tablename__ = "follow_edges"
+    __table_args__ = (UniqueConstraint("follower_id", "athlete_id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    follower_id: Mapped[str] = mapped_column(String(64))
+    athlete_id: Mapped[str] = mapped_column(String(64))
+
+
 class ClientRequest(Base):
     __tablename__ = "client_requests"
     __table_args__ = (UniqueConstraint("kind", "client_id"),)

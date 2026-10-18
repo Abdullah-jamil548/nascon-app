@@ -339,3 +339,19 @@ def test_day2_validation_and_remaining_routes():
     assert client.delete("/audit/v1/privacy/user/nobody").status_code == 404
     wiped = client.delete("/audit/v1/privacy/user/viewer@nascon.test")
     assert wiped.status_code == 200
+    followed = client.post("/audit/v1/follow", json={"follower_id": "player-alpha-2", "athlete_id": "player-alpha-1", "action": "follow"})
+    assert followed.status_code == 200, followed.text
+    again = client.post("/audit/v1/follow", json={"follower_id": "player-alpha-2", "athlete_id": "player-alpha-1", "action": "follow"})
+    assert again.json()["follower_count"] == followed.json()["follower_count"] == 1
+    profile = client.get("/audit/v1/athletes/player-alpha-1")
+    assert profile.status_code == 200
+    assert profile.json()["follower_count"] == 1
+    blocked = client.post("/audit/v1/follow", headers=GUEST, json={"follower_id": "player-alpha-2", "athlete_id": "player-alpha-1"})
+    assert blocked.status_code == 403
+    key = client.post("/audit/v1/stream/key", json={"action": "generate", "player_id": "player-alpha-1", "stream_key_override": "sk_live_authcheck0001"})
+    assert key.status_code == 201
+    allowed = client.post("/internal/mediamtx/auth", json={"action": "publish", "path": "live/sk_live_authcheck0001"})
+    assert allowed.status_code == 200
+    client.post("/audit/v1/stream/key", json={"action": "revoke", "player_id": "player-alpha-1"})
+    denied = client.post("/internal/mediamtx/auth", json={"action": "publish", "path": "live/sk_live_authcheck0001"})
+    assert denied.status_code == 401

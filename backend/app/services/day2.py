@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
 import struct
 import threading
+import urllib.request
 import zlib
 from typing import Any
 
@@ -20,6 +22,7 @@ from app.models import (
     Club,
     CostreamSave,
     DlqItem,
+    FollowEdge,
     GuestToken,
     Match,
     MemberCart,
@@ -36,6 +39,8 @@ from app.services.ops import digest, score_view
 SALT2 = lambda: os.environ.get("DAY2_SALT", "")
 LOCK = threading.Lock()
 WS_CONNECTIONS = 0
+_QR_CACHE: dict[str, dict] = {}
+_DLQ_COUNT = 0
 BAD_WORDS = ("badword", "porn", "scam", "fuck", "shit", "bitch", "asshole", "idiotspam")
 LEET = str.maketrans({"@": "a", "0": "o", "1": "i", "!": "i", "3": "e", "$": "s"})
 LAYOUTS = {"solo", "grid_2", "grid_4", "spotlight"}
@@ -138,6 +143,34 @@ def stream_key(db: Session, body: dict) -> tuple[int, dict]:
     }
     payload["signature"] = sign2(key, {"action": action, "player_id": player_id, "status": "active", "stream_key": key})
     return (201 if action == "generate" else 200), payload
+
+
+def publish_allowed(db: Session, path: str) -> bool:
+    key = path.rsplit("/", 1)[-1]
+    if not key:
+        return False
+    row = db.scalar(select(StreamKeyRow).where(StreamKeyRow.stream_key == key, StreamKeyRow.status == "active"))
+    return row is not None
+
+
+def kick_stream(stream_key_value: str | None) -> None:
+    base = os.environ.get("MEDIAMTX_API")
+    if not base or not stream_key_value:
+        return
+    for kind in ("rtmpconns", "webrtcsessions"):
+        try:
+            with urllib.request.urlopen(base + f"/v3/{kind}/list", timeout=0.4) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            continue
+        for item in payload.get("items") or []:
+            if stream_key_value not in str(item.get("path", "")):
+                continue
+            request = urllib.request.Request(base + f"/v3/{kind}/kick/{item.get('id')}", method="POST")
+            try:
+                urllib.request.urlopen(request, timeout=0.4).close()
+            except Exception:
+                continue
 
 
 def costream(db: Session, body: dict) -> tuple[int, dict]:
@@ -266,7 +299,25 @@ def _route(entity_id: str, kind: str, status: str) -> str:
     return f"/web/matches/{entity_id}/live"
 
 
+def clear_qr_cache() -> None:
+    _QR_CACHE.clear()
+
+
+def reset_counters() -> None:
+    global _DLQ_COUNT
+    _DLQ_COUNT = 0
+    _QR_CACHE.clear()
+
+
+def cached_qr(entity_id: str) -> dict | None:
+    return _QR_CACHE.get(entity_id)
+
+
 def qr_view(db: Session, entity_id: str, inspect: bool) -> dict:
+    if inspect:
+        cached = _QR_CACHE.get(entity_id)
+        if cached is not None:
+            return cached
     row = db.get(QrLink, entity_id)
     kind = row.entity_type if row is not None else _entity_kind(db, entity_id)
     if kind is None:
@@ -293,6 +344,10 @@ def qr_view(db: Session, entity_id: str, inspect: bool) -> dict:
         },
     }
     payload["signature"] = sign2(entity_id, {"entity_id": entity_id, "short_url": row.short_url, "target_route": target})
+    if inspect:
+        _QR_CACHE[entity_id] = payload
+    else:
+        _QR_CACHE.pop(entity_id, None)
     return payload
 
 
@@ -317,6 +372,7 @@ def mark_match(db: Session, body: dict) -> dict:
         db.add(QrNotice(entity_id=match_id, status=status))
     else:
         notice.status = status
+    clear_qr_cache()
     return {"match_id": match_id, "status": status}
 
 
@@ -490,6 +546,31 @@ def _flood(text: str) -> bool:
     return bool(re.search(r"!{3,}|\?{3,}", text))
 
 
+def moderate_fast(body: dict) -> dict | None:
+    room = body.get("chat_room_id") if isinstance(body, dict) else None
+    messages = body.get("incoming_messages") if isinstance(body, dict) else None
+    failed = body.get("simulate_failed_notifications", 0) if isinstance(body, dict) else 1
+    if not isinstance(room, str) or not room or not isinstance(messages, list) or failed or _DLQ_COUNT:
+        return None
+    filtered = []
+    for message in messages:
+        if not isinstance(message, dict):
+            return None
+        text = str(message.get("text", ""))
+        if _flood(text) or _mask(text)[1]:
+            return None
+        filtered.append({"message_id": message.get("message_id"), "sender": str(message.get("sender", "")), "text": text, "flagged": False, "reason": None})
+    response = {
+        "chat_room_id": room,
+        "filtered_messages": filtered,
+        "kicked_users": [],
+        "muted_users": [],
+        "dlq_status": {"queue_depth": 0, "undelivered_events": []},
+    }
+    response["signature"] = sign2(room, {"chat_room_id": room, "flagged_count": 0, "kicked_users": [], "queue_depth": 0})
+    return response
+
+
 def moderate(db: Session, body: dict) -> dict:
     if True:
         room = body.get("chat_room_id")
@@ -536,8 +617,10 @@ def moderate(db: Session, body: dict) -> dict:
             else:
                 filtered.append({"message_id": message.get("message_id"), "sender": sender, "text": text, "flagged": False, "reason": None})
         if failed:
+            global _DLQ_COUNT
             for index in range(int(failed)):
                 db.add(DlqItem(payload={"chat_room_id": room, "attempt": index + 1}))
+            _DLQ_COUNT += int(failed)
             db.flush()
         depth = len(list(db.scalars(select(DlqItem))))
         undelivered = [row.payload for row in db.scalars(select(DlqItem))]
@@ -550,6 +633,54 @@ def moderate(db: Session, body: dict) -> dict:
         }
         response["signature"] = sign2(room, {"chat_room_id": room, "flagged_count": flagged, "kicked_users": kicked, "queue_depth": depth})
         return response
+
+
+def follow(db: Session, body: dict) -> dict:
+    action = body.get("action", "follow")
+    follower = body.get("follower_id")
+    athlete = body.get("athlete_id")
+    fields = []
+    if action not in ("follow", "unfollow"):
+        fields.append("action")
+    if not isinstance(follower, str) or not follower:
+        fields.append("follower_id")
+    if not isinstance(athlete, str) or not athlete or athlete == follower:
+        fields.append("athlete_id")
+    if fields:
+        raise validation(fields)
+    if db.get(Player, athlete) is None:
+        raise ApiError(404, "PLAYER_NOT_FOUND", "Player does not exist.")
+    if db.get(Player, follower) is None and db.get(User, follower) is None:
+        raise ApiError(404, "PLAYER_NOT_FOUND", "Follower does not exist.")
+    existing = db.scalar(select(FollowEdge).where(FollowEdge.follower_id == follower, FollowEdge.athlete_id == athlete))
+    if action == "follow" and existing is None:
+        db.add(FollowEdge(follower_id=follower, athlete_id=athlete))
+        db.flush()
+    elif action == "unfollow" and existing is not None:
+        db.delete(existing)
+        db.flush()
+    following = db.scalar(select(FollowEdge).where(FollowEdge.follower_id == follower, FollowEdge.athlete_id == athlete)) is not None
+    count = len(list(db.scalars(select(FollowEdge).where(FollowEdge.athlete_id == athlete))))
+    return {"athlete_id": athlete, "follower_id": follower, "following": following, "follower_count": count}
+
+
+def athlete_profile(db: Session, player_id: str) -> dict:
+    player = _player(db, player_id)
+    matches = []
+    for match in db.scalars(select(Match)):
+        if player.club_id not in (match.home_team_id, match.away_team_id):
+            continue
+        view = score_view(db, match.match_id)
+        matches.append({"match_id": match.match_id, "status": view["status"], "home": view["home"]["score"], "away": view["away"]["score"]})
+    followers = len(list(db.scalars(select(FollowEdge).where(FollowEdge.athlete_id == player_id))))
+    return {
+        "player_id": player.player_id,
+        "name": player.name,
+        "club_id": player.club_id,
+        "follower_count": followers,
+        "matches": matches,
+        "vod": [item["match_id"] for item in matches if item["status"] == "completed"],
+    }
 
 
 def metrics(db: Session) -> str:
@@ -589,7 +720,7 @@ def erase(db: Session, user_id: str) -> dict:
     return {"user_id": user_id, "status": "anonymized", "pii_retained": False, "tokens_wiped": True}
 
 
-def guest_page(score: str) -> str:
+def guest_page(score: str, match_id: str = "match-m1") -> str:
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NaSCon Live</title>
@@ -602,8 +733,10 @@ button{{background:#0B3D2E;color:#fff;border:0;border-radius:12px;font-weight:70
 [hidden]{{display:none}}
 </style></head>
 <body><main>
-<video data-testid="guest-video-player" aria-label="Live match stream" controls></video>
-<div id="live-score-banner" data-testid="live-score-banner" role="status">{score}</div>
+<div style="position:relative">
+<video data-testid="guest-video-player" aria-label="Live match stream" controls src="http://localhost:8888/live/{match_id}/index.m3u8"></video>
+<div id="live-score-banner" data-testid="live-score-banner" role="status" style="position:absolute;top:8px;left:8px">{score}</div>
+</div>
 <div data-testid="pinned-merch-card">prod-jersey-001 var-jersey-001-L</div>
 <button id="add" data-testid="add-to-guest-cart-btn" type="button">Add to cart</button>
 <span id="count" data-testid="guest-cart-count">0</span>
@@ -617,7 +750,7 @@ document.getElementById('add').onclick=()=>{{count.textContent=String(Number(cou
 document.getElementById('send').onclick=()=>{{document.getElementById('modal').hidden=false;}};
 async function refresh(){{
   try{{
-    const res=await fetch('/audit/v1/score/match-m1');
+    const res=await fetch('/audit/v1/score/{match_id}');
     const body=await res.json();
     document.getElementById('live-score-banner').textContent=(body.home&&body.home.score)+' - '+(body.away&&body.away.score);
   }}catch(e){{}}
